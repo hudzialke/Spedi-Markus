@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Spedi Android App</string>
+    <string name="about_title">O aplikacji</string>
+    <string name="about_body">Spedi Android App\n\nAutor: Patryk Prośniak (hudzialke).\n\nProgram powstał przy wykorzystaniu różnych modeli sztucznej inteligencji (AI).\n\nLicencja MIT pozwala używać, kopiować, modyfikować i rozpowszechniać program, również komercyjnie, z zachowaniem informacji o autorstwie i licencji.\n\nProgram jest udostępniany bez gwarancji. Autor nie ponosi odpowiedzialności za jego działanie ani skutki wykorzystania, w zakresie dopuszczonym przez prawo. Wyniki i terminy wymagają samodzielnej weryfikacji.\n\nPełna licencja znajduje się w pliku LICENSE w źródłach i zasobach aplikacji.</string>
+</resources>

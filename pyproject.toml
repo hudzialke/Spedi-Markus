@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spedi"
+version = "0.1.0"
+description = "Spedi — Brudnopis OT, Ewidentor i Markus Dispatcher w jednym oknie."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{name = "Patryk Prośniak (hudzialke)"}]
+requires-python = ">=3.12"
+dependencies = [
+  "PySide6>=6.9.0",
+  "platformdirs>=4.2.0",
+  "cryptography>=42.0.0",
+  "google-auth-oauthlib>=1.2.0",
+  "httpx>=0.27.0",
+  "requests>=2.32.0",
+  "tzdata>=2024.1",
+  "reportlab>=4.2.0",
+  "pypdf>=5.0.0",
+  "Pillow>=10.0.0",
+  "openpyxl>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2.0", "pyinstaller>=6.10.0"]
+sync = ["firebase-admin>=6.5.0"]
+
+[project.scripts]
+spedi = "spedi.app:main"
+
+[tool.setuptools.packages.find]
+include = ["spedi*", "brudnopis_ot*", "ewidentor*", "ddd_analyzer*", "markus_dispatcher*"]
+exclude = ["spedi._vendor*"]
+
+[tool.setuptools.package-data]
+spedi = ["ui/*.qss", "ui/*.ico", "locales/*.json", "_vendor/tachograph/**/*", "_vendor/tachograph/LICENSE"]
+ddd_analyzer = ["data/*.geojson"]
+markus_dispatcher = ["resources/*.qss", "resources/*.ico", "resources/*.png"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["**/__pycache__/*", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

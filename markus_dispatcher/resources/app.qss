@@ -1,0 +1,179 @@
+/* MarkusDispatcher — Split Lane + kafelki (szuflada floty) */
+QWidget {
+  font-family: "Segoe UI", "Manrope", sans-serif;
+  font-size: 16px;
+  color: #101820;
+  background: #e9eef2;
+}
+
+QMainWindow, QDialog {
+  background: #e9eef2;
+}
+
+#BrandTitle {
+  font-size: 24px;
+  font-weight: 800;
+  color: #0b3d4a;
+  letter-spacing: -0.5px;
+}
+
+#BrandSub {
+  color: #5a6672;
+  font-size: 13px;
+}
+
+QPushButton, QToolButton {
+  border-radius: 0px;
+  padding: 8px 12px;
+  font-weight: 600;
+  background: #dbe2e8;
+  border: none;
+  color: #101820;
+}
+
+QPushButton:hover, QToolButton:hover {
+  background: #cdd5dc;
+}
+
+QPushButton:disabled, QToolButton:disabled {
+  color: #5a6672;
+  background: #e3e8ec;
+}
+
+QToolButton {
+  padding: 8px 12px;
+}
+
+QToolBar QToolButton {
+  background-color: #dbe2e8;
+  border: none;
+  padding: 8px 12px;
+  color: #101820;
+  font-weight: 600;
+}
+
+QToolBar QToolButton:hover {
+  background-color: #cdd5dc;
+}
+
+QPushButton#PrimaryButton, QToolButton#PrimaryButton {
+  background: #e11d48;
+  color: white;
+  border: none;
+}
+
+QPushButton#PrimaryButton:hover, QToolButton#PrimaryButton:hover {
+  background: #be123c;
+}
+
+QPushButton#GhostButton, QToolButton#GhostButton {
+  background: #dbe2e8;
+  border: none;
+  color: #101820;
+}
+
+QPushButton#GhostButton:hover, QToolButton#GhostButton:hover {
+  background: #cdd5dc;
+}
+
+QToolButton#GhostButton[active="true"] {
+  background: #c5ced6;
+  border: none;
+}
+
+QPushButton#WaButton, QToolButton#WaButton {
+  background: #128c7e;
+  color: white;
+  border: none;
+}
+
+QPushButton#MailButton, QToolButton#MailButton {
+  background: #0b3d4a;
+  color: white;
+  border: none;
+}
+
+QPushButton#ChipButton {
+  background: #dbe2e8;
+  border: none;
+}
+
+QPushButton#ChipButton[active="true"] {
+  background: #0b3d4a;
+  color: white;
+  border: none;
+}
+
+QFrame#Lane, QFrame#Tile {
+  background: white;
+  border: 1px solid #d0d7de;
+}
+
+QLabel#SectionLabel, QLabel#TileTitle {
+  color: #0b3d4a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+QPushButton#DriverRow {
+  text-align: left;
+  background: #f7f9fb;
+  border: 1px solid #d0d7de;
+  padding: 12px;
+  font-weight: 500;
+  font-size: 15px;
+}
+
+QPushButton#DriverRow[selected="true"] {
+  background: #eef6f8;
+  border: 1px solid #0b3d4a;
+  border-left: 3px solid #0b3d4a;
+}
+
+QLabel#GlyphLabel {
+  color: #0b3d4a;
+  font-size: 18px;
+  font-weight: 700;
+  min-width: 28px;
+  max-width: 28px;
+}
+
+QLabel#DriverChip, QPushButton#DriverChip {
+  font-size: 16px;
+  font-weight: 700;
+  color: #101820;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 4px 8px;
+}
+
+QPlainTextEdit, QLineEdit, QComboBox, QDateTimeEdit {
+  background: white;
+  border: 1px solid #c5ced6;
+  padding: 8px;
+  font-size: 16px;
+  selection-background-color: #0b3d4a;
+  selection-color: white;
+}
+
+QScrollArea {
+  background: transparent;
+  border: none;
+}
+
+QListWidget {
+  background: white;
+  border: 1px solid #c5ced6;
+  font-size: 15px;
+}
+
+QSplitter::handle {
+  background: #d0d7de;
+  width: 6px;
+}
+
+QStatusBar {
+  background: #e9eef2;
+  color: #5a6672;
+}
