@@ -113,6 +113,13 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
+    for name, declaration in (
+        ('local_only', 'INTEGER NOT NULL DEFAULT 0'),
+        ('pod_requirements', "TEXT NOT NULL DEFAULT ''"),
+        ('import_sources', "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if not _column_exists(conn, 'jobs', name):
+            conn.execute(f'ALTER TABLE jobs ADD COLUMN {name} {declaration}')
     if not _column_exists(conn, "jobs", "archive_path"):
         conn.execute(
             "ALTER TABLE jobs ADD COLUMN archive_path TEXT NOT NULL DEFAULT ''"
@@ -412,6 +419,9 @@ def _row_to_job(row: sqlite3.Row) -> JobData:
         client_message=_row_get(row, "client_message", ""),
         archive_path=_row_get(row, "archive_path", ""),
         updated_at=_row_get(row, "updated_at", ""),
+        local_only=bool(row['local_only']) if 'local_only' in row.keys() else False,
+        pod_requirements=_row_get(row, 'pod_requirements'),
+        import_sources=_row_get(row, 'import_sources'),
     )
 
 
@@ -689,6 +699,10 @@ def save_job(job: JobData) -> JobData:
                 ),
             )
             job_id = job.id
+        # Sticky local-only flag: a stale editor / remote payload must never
+        # accidentally re-enable uploads of an imported job.
+        conn.execute('UPDATE jobs SET local_only = MAX(local_only, ?), pod_requirements = ?, import_sources = ? WHERE id = ?',
+                     (int(job.local_only), job.pod_requirements, job.import_sources, job_id))
         row = conn.execute(
             "SELECT * FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()
@@ -770,6 +784,10 @@ def upsert_driver_by_id(
 def apply_remote_job(payload: dict, *, local_id: int | None) -> JobData:
     """Zastosuj dokument Firestore jako lokalne zlecenie."""
     from markus_dispatcher.core.models import Coordinates
+
+    existing = get_job(local_id) if local_id is not None else None
+    if existing is not None and existing.local_only:
+        return existing
 
     def _coord(prefix: str) -> Coordinates | None:
         lat = payload.get(f"{prefix}_lat")

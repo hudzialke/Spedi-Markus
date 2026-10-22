@@ -12,7 +12,7 @@ from markus_dispatcher import config
 from markus_dispatcher.core.instruction import build_instruction
 from markus_dispatcher.core.models import Driver, JobData
 
-ALLOWED_FILE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".csv"}
+ALLOWED_FILE_SUFFIXES = {".pdf", ".doc", ".docx", ".xlsx", ".xls", ".xlsm", ".csv", '.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tif', '.tiff'}
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,10 @@ def ensure_job_archive(
         json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    if job.local_only or job.pod_requirements or (paths.job_dir / 'warunki_pod.txt').exists():
+        (paths.job_dir / 'warunki_pod.txt').write_text(job.pod_requirements, encoding='utf-8')
+    if job.local_only or job.import_sources or (paths.job_dir / 'zrodla_importu.json').exists():
+        (paths.job_dir / 'zrodla_importu.json').write_text(job.import_sources, encoding='utf-8')
     return paths
 
 
@@ -137,7 +141,7 @@ def copy_file_attachment(
     suffix = source.suffix.lower()
     if suffix not in ALLOWED_FILE_SUFFIXES:
         raise ValueError(
-            "Dozwolone: PDF oraz Excel/CSV (.pdf, .xlsx, .xls, .xlsm, .csv)."
+            "Dozwolone: PDF, Word, Excel/CSV oraz obrazy."
         )
     idx = next_document_index(documents_dir)
     base = slugify(label or source.stem, max_len=40)

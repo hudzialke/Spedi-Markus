@@ -2,6 +2,18 @@
 
 **English** · [Polski](README.pl.md)
 
+## Download for Windows (64-bit)
+
+[**Download the Spedi installer**](https://github.com/hudzialke/Spedi-Markus/releases/latest/download/Spedi-Setup.exe)
+
+Open `Spedi-Setup.exe`, follow the installation wizard, then use the desktop
+shortcut. No Python or terminal commands are needed. Offline OCR includes
+Polish, English, German, French and Italian, with a 2 GiB memory limit and
+one recognition task at a time.
+[All releases and portable ZIP downloads](https://github.com/hudzialke/Spedi-Markus/releases).
+Close Spedi before upgrading with a new installer. User databases and documents
+are stored separately from application files.
+
 A desktop application combining Brudnopis OT, Ewidentor, DDD Analyzer and
 Dispatcher: weekly rest planning, tachograph analysis, working time records,
 transport orders and freight settlements. **Spedi Android App** (formerly

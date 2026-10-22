@@ -2,6 +2,18 @@
 
 [English](README.md) · **Polski**
 
+## Pobierz i zainstaluj (Windows 64-bit)
+
+[**Pobierz instalator Spedi**](https://github.com/hudzialke/Spedi-Markus/releases/latest/download/Spedi-Setup.exe)
+
+Uruchom pobrany `Spedi-Setup.exe`, przejdź przez instalację, a następnie otwórz
+Spedi ze skrótu na pulpicie. Python, CMD i PowerShell nie są potrzebne.
+Instalator zawiera lokalny OCR: polski, angielski, niemiecki, francuski i włoski.
+OCR ma limit pamięci 2 GiB i przetwarza jedno zaznaczenie naraz.
+[Wszystkie wydania i wersja przenośna ZIP](https://github.com/hudzialke/Spedi-Markus/releases).
+Przy aktualizacji zamknij program i uruchom nowy instalator. Bazy i dokumenty
+użytkownika są przechowywane osobno od plików aplikacji.
+
 Program desktopowy łączący Brudnopis OT, Ewidentor, DDD Analyzer i Dispatcher:
 planowanie odpoczynków, analizę danych tachografu, ewidencję czasu pracy,
 zlecenia oraz rozliczenie frachtu. W `mobile/` znajduje się **Spedi Android App**
@@ -66,6 +78,7 @@ połączenia telefonu. **Nie umieszczaj konta serwisowego Firebase w APK.**
 - [Połączenie Spedi z Androidem — instrukcja krok po kroku](docs/android-connection.pl.md)
 - [Spedi Android App](mobile/README.md)
 - [Konfiguracja Google Sheets](docs/google-sheets.md)
+- [Lokalny import dokumentów i wymagań POD do Dispatchera](docs/document-import.pl.md)
 - [Zasady publikacji bez danych](docs/publication.md)
 
 ## Testy i budowanie

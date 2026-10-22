@@ -7,7 +7,7 @@ from urllib.parse import quote
 import httpx
 
 from markus_dispatcher.core import google_connection, settlement
-from markus_dispatcher.data import settlement_store
+from markus_dispatcher.data import settlement_store, db
 
 
 class ConflictError(ValueError):
@@ -133,6 +133,9 @@ class Sheets:
         return settlement.inputs(rows[0])
 
     def publish(self, job_id, file_id, sheet_id, values, *, overwrite_remote=None):
+        job = db.get_job(job_id)
+        if job is not None and job.local_only:
+            raise ValueError('To zlecenie pochodzi z lokalnego importu. Wysyłka do Google Sheets jest zablokowana.')
         file_id = self.file_id(file_id)
         record = settlement_store.load(job_id)
         binding = record['binding']

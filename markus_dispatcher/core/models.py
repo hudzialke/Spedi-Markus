@@ -93,6 +93,11 @@ class JobData:
     archive_path: str = ""
     updated_at: str = ""
 
+    # Imported documents and their derived data must remain on this device.
+    local_only: bool = False
+    pod_requirements: str = ""
+    import_sources: str = ""
+
 
 # Alias wsteczny dla portu z Zlecenie.
 ZlecenieData = JobData

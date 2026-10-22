@@ -3,7 +3,7 @@
 
 #define MyAppName "Spedi"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1"
+  #define MyAppVersion "0.2.0"
 #endif
 #define MyAppPublisher "Patryk Prośniak (hudzialke)"
 #define MyAppExeName "Spedi.exe"
@@ -23,7 +23,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\artifacts
-OutputBaseFilename=Spedi-Setup-{#MyAppVersion}
+OutputBaseFilename=Spedi-Setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
@@ -52,6 +52,3 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Uruchom {#MyAppName}"; Flags: nowait postinstall skipifsilent; WorkingDir: "{app}"
 
-[UninstallDelete]
-Type: filesandordirs; Name: "{app}\raporty"
-Type: filesandordirs; Name: "{app}\scenariusze"

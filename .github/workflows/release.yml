@@ -1,0 +1,94 @@
+name: Windows release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check version and existing release
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read version.' }
+          "number=$version" >> $env:GITHUB_OUTPUT
+          $published = gh release view "v$version" --json isDraft --jq '.isDraft' 2>$null
+          if ($LASTEXITCODE -eq 0 -and $published -eq 'false') {
+            'needed=false' >> $env:GITHUB_OUTPUT
+          } else {
+            'needed=true' >> $env:GITHUB_OUTPUT
+          }
+          exit 0
+      - name: Install dependencies
+        if: steps.version.outputs.needed == 'true'
+        run: python -m pip install -e ".[dev,sync]"
+      - name: Audit published source
+        if: steps.version.outputs.needed == 'true'
+        run: python tools/public_export.py --check .
+      - name: Prepare offline OCR
+        if: steps.version.outputs.needed == 'true'
+        run: python tools/setup_tesseract.py
+      - name: Test
+        if: steps.version.outputs.needed == 'true'
+        run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+          SPEDI_LANGUAGE: pl
+      - name: Build EXE, test frozen package, build installer and portable ZIP
+        if: steps.version.outputs.needed == 'true'
+        shell: pwsh
+        run: ./build.ps1 -PythonPath (Get-Command python).Source -SkipDependencies -Installer -Portable
+      - name: Test installer on isolated runner
+        if: steps.version.outputs.needed == 'true'
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'Spedi-install-test'
+          $setup = Start-Process -FilePath 'artifacts/Spedi-Setup.exe' -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="' + $destination + '"')) -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw 'Installer failed.' }
+          $report = Join-Path $env:RUNNER_TEMP 'installed-check.json'
+          $check = Start-Process -FilePath (Join-Path $destination 'Spedi.exe') -ArgumentList @('--self-test-report', ('"' + $report + '"')) -WindowStyle Hidden -Wait -PassThru
+          if ($check.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $report)) { throw 'Installed application failed.' }
+          if (-not (Get-Content -LiteralPath $report -Raw | ConvertFrom-Json).ok) { throw 'Installed application check failed.' }
+          $uninstall = Start-Process -FilePath (Join-Path $destination 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -WindowStyle Hidden -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw 'Uninstaller failed.' }
+      - name: Preserve build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-diagnostics
+          path: |
+            work/*self-test.json
+            build/Spedi/warn-Spedi.txt
+      - name: Publish release
+        if: steps.version.outputs.needed == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.number }}
+        run: |
+          $tag = 'v' + $env:RELEASE_VERSION
+          $notes = 'docs/releases/' + $env:RELEASE_VERSION + '.md'
+          gh release view $tag --json isDraft 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --draft --target $env:GITHUB_SHA --title "Spedi $env:RELEASE_VERSION" --notes-file $notes
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed.' }
+          }
+          gh release upload $tag artifacts/Spedi-Setup.exe "artifacts/Spedi-$env:RELEASE_VERSION-Windows-x64.zip" artifacts/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed.' }
+          gh release edit $tag --draft=false --latest --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }

@@ -21,6 +21,10 @@ def _windows_app_id() -> None:
 
 
 def main() -> int:
+    # Packaging check must precede legacy migration and all user storage access.
+    if len(sys.argv) == 3 and sys.argv[1] == "--self-test-report":
+        from spedi.release_check import run
+        return run(sys.argv[2])
     configure_module_paths()
     migrate_legacy_databases()
     _windows_app_id()

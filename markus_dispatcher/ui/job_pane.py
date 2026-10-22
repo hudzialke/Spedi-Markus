@@ -3,6 +3,7 @@ from __future__ import annotations
 from spedi.i18n import tr as _tr
 
 from pathlib import Path
+import json
 
 from PySide6.QtCore import QBuffer, QDate, QDateTime, QIODevice, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage, QKeySequence
@@ -64,6 +65,8 @@ from markus_dispatcher.ui.settlement_panel import SettlementPanel
 
 
 def _format_dt(edit: QDateTimeEdit) -> str:
+    if edit.specialValueText() and edit.dateTime() == edit.minimumDateTime():
+        return ''
     return edit.dateTime().toPython().strftime("%d.%m.%Y %H:%M")
 
 
@@ -101,6 +104,9 @@ class JobPane(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._job_id: int | None = None
+        self._local_only = False
+        self._import_sources = ''
+        self._pending_import_documents: list[tuple[Path | None, QImage]] = []
         self._driver_id: int | None = None
         self._client_id: int | None = None
         self._archive_path = ""
@@ -144,6 +150,9 @@ class JobPane(QWidget):
         head.addWidget(self.copy_btn)
         head.addWidget(self.maps_btn)
         head.addWidget(self.footer_btn)
+        self.import_btn = tool_button(_tr('Import z dokumentu'), 'file', label=_tr('Import z dokumentu'))
+        self.import_btn.clicked.connect(self._import_document)
+        head.addWidget(self.import_btn)
         root.addLayout(head)
 
         month_row = QHBoxLayout()
@@ -156,6 +165,12 @@ class JobPane(QWidget):
         month_row.addWidget(QLabel(_tr("Zlecenia z innych miesięcy zobaczysz po zmianie miesiąca.")))
         month_row.addStretch(1)
         root.addLayout(month_row)
+
+        self.import_hint = QLabel()
+        self.import_hint.setWordWrap(True)
+        self.import_hint.setStyleSheet('color: #7a5000; background: #fff4d6; padding: 8px;')
+        self.import_hint.hide()
+        root.addWidget(self.import_hint)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -176,6 +191,8 @@ class JobPane(QWidget):
         self.load_when = QDateTimeEdit(QDateTime.currentDateTime())
         self.load_when.setCalendarPopup(True)
         self.load_when.setDisplayFormat("dd.MM.yyyy HH:mm")
+        self.load_when.setMinimumDateTime(QDateTime(QDate(1900, 1, 1), self.load_when.minimumTime()))
+        self.load_when.setSpecialValueText(_tr('Nie wskazano terminu'))
         self.load_gps = QLabel("GPS: —")
         self.load_status = QLabel("")
         self.load_geo_btn = tool_button(
@@ -203,6 +220,8 @@ class JobPane(QWidget):
         self.unload_when = QDateTimeEdit(QDateTime.currentDateTime())
         self.unload_when.setCalendarPopup(True)
         self.unload_when.setDisplayFormat("dd.MM.yyyy HH:mm")
+        self.unload_when.setMinimumDateTime(QDateTime(QDate(1900, 1, 1), self.unload_when.minimumTime()))
+        self.unload_when.setSpecialValueText(_tr('Nie wskazano terminu'))
         self.unload_gps = QLabel("GPS: —")
         self.unload_status = QLabel("")
         self.unload_geo_btn = tool_button(
@@ -277,6 +296,15 @@ class JobPane(QWidget):
         self.archive_hint.setStyleSheet("color: #5a6672; font-size: 13px;")
         side_l.addWidget(self.archive_hint)
 
+        pod_title = QLabel(_tr('Wymagania POD po rozładunku'))
+        pod_title.setObjectName('TileTitle')
+        side_l.addWidget(pod_title)
+        self.pod_requirements_edit = QPlainTextEdit()
+        self.pod_requirements_edit.setAccessibleName(_tr('Wymagania POD po rozładunku'))
+        self.pod_requirements_edit.setPlaceholderText(_tr('Dokumenty, format, adres / portal, termin, kara. Zachowaj pełną treść warunków.'))
+        self.pod_requirements_edit.setMinimumHeight(90)
+        side_l.addWidget(self.pod_requirements_edit)
+
         client_lbl = QLabel(_tr("Update do klienta"))
         client_lbl.setObjectName("TileTitle")
         side_l.addWidget(client_lbl)
@@ -338,7 +366,129 @@ class JobPane(QWidget):
                 w.currentIndexChanged.connect(self._refresh_preview)  # type: ignore[attr-defined]
 
         self.unload_when.dateTimeChanged.connect(lambda _dt: self.settlement.apply_month_target() if not self._loading_history else None)
+        for widget in (self.ref_edit, self.client_edit, self.load_address, self.unload_address, self.pod_requirements_edit):
+            widget.textChanged.connect(self._refresh_import_hint)
+        self.load_when.dateTimeChanged.connect(self._refresh_import_hint)
+        self.unload_when.dateTimeChanged.connect(self._refresh_import_hint)
         self.new_job()
+
+    def _import_document(self):
+        if self._driver_id is None:
+            QMessageBox.information(self, _tr('Import z dokumentu'), _tr('Najpierw wybierz kierowcę z floty. Importowane zlecenie trafi do jego ewidencji.'))
+            return
+        from markus_dispatcher.ui.document_import_dialog import DocumentImportDialog
+        dialog = DocumentImportDialog(self)
+        if dialog.exec() != DocumentImportDialog.DialogCode.Accepted:
+            return
+        if any((self.ref_edit.text().strip(), self.client_edit.text().strip(),
+                self.load_address.toPlainText().strip(), self.unload_address.toPlainText().strip(),
+                self.pod_requirements_edit.toPlainText().strip())):
+            if QMessageBox.question(self, _tr('Przenieś dane'),
+                _tr('Przenieść wskazane pola do bieżącego zlecenia? Pola wskazane w importerze zastąpią ich obecne wartości.'),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+        self._apply_document_import(dialog.values, dialog.sources, dialog.source_path, dialog.clipboard_image)
+
+    def _apply_document_import(self, values, sources, source_path=None, clipboard_image=None):
+        self._cancel_geocode()
+        self._local_only = True
+        # Do not update/create a shared client from data designated as local-only.
+        self._client_id = None
+        self._loading_history = True
+        try:
+            for key, edit in (('ref_numbers', self.ref_edit), ('client_name', self.client_edit),
+                              ('pallets', self.pallets_edit)):
+                if key in values:
+                    edit.setText(values[key])
+            for key, edit in (('load_address', self.load_address), ('unload_address', self.unload_address),
+                              ('pod_requirements', self.pod_requirements_edit), ('notes', self.notes_edit)):
+                if key in values:
+                    edit.setPlainText(values[key])
+            # Never keep today's default date as if it came from the document.
+            for key, edit in (('load_datetime', self.load_when), ('unload_datetime', self.unload_when)):
+                if key in values:
+                    self._apply_datetime(edit, values[key])
+                elif self._job_id is None:
+                    edit.setDateTime(edit.minimumDateTime())
+            if values.get('driver_note'):
+                notes = self.notes_edit.toPlainText().strip()
+                self.notes_edit.setPlainText((notes + '\n' if notes else '') + _tr('Oznaczenie z dokumentu: ') + values['driver_note'])
+            if 'price' in values:
+                self.settlement.fields['price'].setText(values['price'])
+            for side in ('load', 'unload'):
+                if side + '_address' in values:
+                    self._set_coords(side, None)
+            self._maps_url = ''
+            previous = {}
+            try:
+                previous = json.loads(self._import_sources) if self._import_sources else {}
+            except (TypeError, ValueError):
+                pass
+            self._import_sources = json.dumps({**previous, **sources}, ensure_ascii=False)
+            if source_path is not None:
+                self._pending_import_documents.append((Path(source_path), QImage()))
+            elif clipboard_image is not None and not clipboard_image.isNull():
+                self._pending_import_documents.append((None, clipboard_image.copy()))
+        finally:
+            self._loading_history = False
+        self._refresh_preview()
+        self._refresh_import_hint()
+
+    def _refresh_import_hint(self, *args):
+        if self._loading_history:
+            return
+        self.import_hint.setVisible(self._local_only)
+        if not self._local_only:
+            return
+        missing = []
+        for text, label in ((self.ref_edit.text(), _tr('numer')), (self.client_edit.text(), _tr('klient')),
+                            (self.load_address.toPlainText(), _tr('załadunek')),
+                            (self.unload_address.toPlainText(), _tr('rozładunek')),
+                            (_format_dt(self.load_when), _tr('termin załadunku')),
+                            (_format_dt(self.unload_when), _tr('termin rozładunku')),
+                            (self.pod_requirements_edit.toPlainText(), _tr('wymagania POD'))):
+            if not text.strip():
+                missing.append(label)
+        self.import_hint.setText((_tr('⚠ Do uzupełnienia: ') + ', '.join(missing) + '. ' if missing else '') +
+            _tr('Import lokalny — wysyłka i synchronizacja zablokowane. ') +
+            (_tr('Dokument źródłowy zostanie dołączony przy zapisie zlecenia.') if self._pending_import_documents else ''))
+
+    def _allow_external(self):
+        if not self._local_only:
+            return True
+        QMessageBox.information(self, _tr('Dane lokalne'),
+            _tr('To zlecenie pochodzi z lokalnego importu. Wysyłka danych, geokodowanie i synchronizacja są zablokowane.'))
+        return False
+
+    def _archive_import_documents(self, saved):
+        if not self._pending_import_documents or not saved.archive_path:
+            return
+        docs = ARCHIVE_ROOT / saved.archive_path / 'dokumenty'
+        while self._pending_import_documents:
+            path, image = self._pending_import_documents[0]
+            try:
+                if path is not None:
+                    destination = copy_file_attachment(docs, path)
+                    original = path.name
+                else:
+                    from markus_dispatcher.core.job_archive import next_document_index
+                    docs.mkdir(parents=True, exist_ok=True)
+                    destination = docs / f'{next_document_index(docs):02d}_dokument_ze_schowka.png'
+                    if not image.save(str(destination), 'PNG'):
+                        raise OSError('image save failed')
+                    original = 'clipboard.png'
+                try:
+                    db.add_attachment(saved.id, kind=detect_kind(destination), original_name=original, stored_name=destination.name)
+                except Exception:
+                    destination.unlink(missing_ok=True)
+                    raise
+            except Exception:
+                QMessageBox.warning(self, _tr('Dokument źródłowy'),
+                    _tr('Dane zlecenia zapisano, ale nie udało się dołączyć dokumentu źródłowego. Sprawdź dostęp do pliku i zapisz zlecenie ponownie.'))
+                break
+            self._pending_import_documents.pop(0)
+        self._refresh_import_hint()
 
     def selected_month(self) -> str:
         return self.month_edit.date().toString("yyyy-MM")
@@ -359,6 +509,9 @@ class JobPane(QWidget):
             self.new_job()
             return
         matching = monthly_settlements.jobs_for_month(driver_id, self.selected_month())
+        if not matching:
+            matching = [job for job in db.list_jobs_for_driver(driver_id)
+                        if job.local_only and not job.unload_datetime]
         existing = matching[-1] if matching else None
         if existing is not None:
             self.load_job(existing)
@@ -372,6 +525,10 @@ class JobPane(QWidget):
         self._cancel_geocode()
         self._loading_history = True
         self._job_id = None
+        self._local_only = False
+        self._import_sources = ''
+        self._pending_import_documents.clear()
+        self.pod_requirements_edit.clear()
         self._driver_id = driver_id
         self._client_id = None
         self._archive_path = ""
@@ -412,6 +569,8 @@ class JobPane(QWidget):
         self._loading_history = False
         self.settlement.apply_month_target()
 
+        self._refresh_import_hint()
+
     def load_job(self, job: JobData) -> None:
         if self._job_id is not None:
             self.settlement.save_draft(self._job_id)
@@ -419,6 +578,10 @@ class JobPane(QWidget):
         self._cancel_geocode()
         self._loading_history = True
         self._job_id = job.id
+        self._local_only = job.local_only
+        self._import_sources = job.import_sources
+        self._pending_import_documents.clear()
+        self.pod_requirements_edit.setPlainText(job.pod_requirements)
         self._driver_id = job.driver_id
         self._client_id = job.client_id
         self._archive_path = job.archive_path
@@ -473,6 +636,7 @@ class JobPane(QWidget):
         self._reload_attachments()
         self._loading_history = False
         self.settlement.apply_month_target()
+        self._refresh_import_hint()
 
     def collect(self) -> JobData:
         load_c = self._load_coords
@@ -502,12 +666,17 @@ class JobPane(QWidget):
             contact_phone=self.client_phone.text().strip(),
             contact_email=self.client_email.text().strip(),
             client_message=self.preview.toPlainText(),
+            local_only=self._local_only,
+            pod_requirements=self.pod_requirements_edit.toPlainText().strip(),
+            import_sources=self._import_sources,
         )
 
     def _apply_datetime(self, edit: QDateTimeEdit, text: str) -> None:
         parsed = _parse_dt(text)
         if parsed is not None:
             edit.setDateTime(parsed)
+        else:
+            edit.setDateTime(edit.minimumDateTime())
 
     def _on_load_changed(self) -> None:
         self._on_address_changed("load")
@@ -565,6 +734,8 @@ class JobPane(QWidget):
                 thread.quit()
 
     def _request_geocode(self, side: str) -> None:
+        if not self._allow_external():
+            return
         if self._loading_history:
             return
         address_edit = self.load_address if side == "load" else self.unload_address
@@ -665,7 +836,7 @@ class JobPane(QWidget):
 
     def _save(self, checked=False, *, show_message: bool = True) -> None:
         job = self.collect()
-        if job.client_name:
+        if job.client_name and not job.local_only:
             client = db.find_or_create_client_by_name(job.client_name)
             if client is not None:
                 job.client_id = client.id
@@ -692,6 +863,7 @@ class JobPane(QWidget):
         )
         self._job_id = saved.id
         self._archive_path = saved.archive_path
+        self._archive_import_documents(saved)
         if self._driver_id and saved.status in ("assigned", "loading", "en_route"):
             db.set_driver_status(self._driver_id, "working")
         elif self._driver_id and saved.status == "done":
@@ -718,6 +890,8 @@ class JobPane(QWidget):
         )
 
     def _open_maps(self) -> None:
+        if not self._allow_external():
+            return
         url = self._maps_url or self.collect().maps_url
         if not url:
             QMessageBox.information(
@@ -748,7 +922,7 @@ class JobPane(QWidget):
         job = self.collect()
         if not job.contact_phone and not job.contact_email and job.id is None:
             return
-        if job.client_name:
+        if job.client_name and not job.local_only:
             client = db.find_or_create_client_by_name(job.client_name)
             if client is not None:
                 job.client_id = client.id
@@ -773,6 +947,8 @@ class JobPane(QWidget):
         self._reload_history(select_job_id=saved.id)
 
     def _send_whatsapp(self) -> None:
+        if not self._allow_external():
+            return
         self._persist_contacts()
         msg = self._status_message()
         url = whatsapp_url(self.client_phone.text(), msg)
@@ -780,6 +956,8 @@ class JobPane(QWidget):
         open_web_url(url)
 
     def _send_email(self) -> None:
+        if not self._allow_external():
+            return
         email = self.client_email.text().strip()
         if not email:
             QMessageBox.information(
@@ -807,10 +985,18 @@ class JobPane(QWidget):
         self.history_combo.clear()
         self.history_combo.addItem("— nowe zlecenie —", None)
         if self._driver_id is not None:
-            for job in monthly_settlements.jobs_for_month(self._driver_id, self.selected_month()):
+            jobs = monthly_settlements.jobs_for_month(self._driver_id, self.selected_month())
+            known = {job.id for job in jobs}
+            jobs += [job for job in db.list_jobs_for_driver(self._driver_id)
+                     if job.id not in known and job.local_only and not job.unload_datetime]
+            for job in jobs:
                 when = job.unload_datetime or "?"
                 ref = job.ref_numbers or f"#{job.id}"
                 label = f"{when} · {ref}"
+                if job.local_only and not all((job.ref_numbers, job.client_name, job.load_address,
+                                               job.unload_address, job.load_datetime, job.unload_datetime,
+                                               job.pod_requirements)):
+                    label = '⚠ ' + label
                 self.history_combo.addItem(label, job.id)
         if select_job_id is not None:
             idx = self.history_combo.findData(select_job_id)
@@ -838,7 +1024,7 @@ class JobPane(QWidget):
             )
             return None
         job = self.collect()
-        if job.client_name:
+        if job.client_name and not job.local_only:
             client = db.find_or_create_client_by_name(job.client_name)
             if client is not None:
                 job.client_id = client.id
@@ -850,6 +1036,7 @@ class JobPane(QWidget):
         )
         self._job_id = saved.id
         self._archive_path = saved.archive_path
+        self._archive_import_documents(saved)
         self._reload_history(select_job_id=saved.id)
         return saved
 

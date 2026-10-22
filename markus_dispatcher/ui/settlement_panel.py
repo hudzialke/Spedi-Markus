@@ -346,6 +346,8 @@ class SettlementPanel(QGroupBox):
         self._select(file_id, tabs, tab['sheetId'])
 
     def _publish(self):
+        if self.pane.collect().local_only:
+            raise ValueError(_tr('To zlecenie pochodzi z lokalnego importu. Wysyłka do Google Sheets jest zablokowana.'))
         self.apply_month_target()
         values = settlement.payload(self.draft(), self.pane.collect())
         if self.binding.get('last'):

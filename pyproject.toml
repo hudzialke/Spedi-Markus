@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spedi"
-version = "0.1.0"
+version = "0.2.0"
 description = "Spedi — Brudnopis OT, Ewidentor i Markus Dispatcher w jednym oknie."
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,7 @@ dependencies = [
   "pypdf>=5.0.0",
   "Pillow>=10.0.0",
   "openpyxl>=3.1.0",
+  "xlrd>=2.0.1",
 ]
 
 [project.optional-dependencies]

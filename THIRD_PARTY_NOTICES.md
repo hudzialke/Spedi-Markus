@@ -28,12 +28,18 @@ Boundaries are approximate and are not evidence of a driver's location.
 
 ## Dependencies
 
-Python, Qt/PySide6, ReportLab, pypdf, Pillow, cryptography, openpyxl,
+Python, Qt/PySide6 (including Qt PDF), ReportLab, pypdf, Pillow, cryptography, openpyxl, xlrd,
 platformdirs, httpx, requests and Google/Firebase libraries retain their own
 licenses. Android, Kotlin, AndroidX, Compose and Firebase SDKs retain theirs.
 MIT applies to Spedi's original code; it does not replace dependency licenses.
 Binary distributors must retain applicable dependency notices and comply with
 their licenses, including Qt/PySide6 licensing requirements.
+
+Optional private OCR runtime: Tesseract and the tessdata_fast language models
+are distributed by the Tesseract project under Apache-2.0. The setup script
+preserves upstream notices in `doc/` and `tessdata/LICENSE`. The Windows runtime
+also includes third-party libraries with their respective licenses; distributors
+must retain their notices. Runtime provenance and hashes are in spedi-runtime.json.
 
 The Gradle wrapper is a Gradle component licensed under Apache-2.0:
 [Gradle license](https://github.com/gradle/gradle/blob/master/LICENSE).

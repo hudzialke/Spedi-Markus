@@ -25,6 +25,11 @@ datas = [
 binaries = []
 hiddenimports = []
 
+# Private offline OCR, downloaded separately by tools/setup_tesseract.py.
+ocr_runtime = os.path.join(base_path, 'work', 'local-tools', 'tesseract')
+if os.path.isfile(os.path.join(ocr_runtime, 'tesseract.exe')):
+    datas.append((ocr_runtime, 'tesseract'))
+
 examples = os.path.join(brud_root, "brudnopis_ot", "examples")
 if os.path.isdir(examples):
     datas.append((examples, "brudnopis_ot/examples"))
@@ -86,6 +91,9 @@ hiddenimports += [
     "platformdirs",
     "PIL",
     "PySide6.QtSvg",
+    "PySide6.QtPdf",
+    "openpyxl",
+    "xlrd",
     # Dispatcher loads OAuth only after the user clicks "Połącz z Google".
     "google_auth_oauthlib.flow",
     "google.oauth2.credentials",

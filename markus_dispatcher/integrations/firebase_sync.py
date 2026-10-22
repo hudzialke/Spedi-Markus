@@ -125,6 +125,8 @@ def _is_newer(remote: str, local: str) -> bool:
 
 
 def _job_doc(job: JobData) -> dict[str, Any]:
+    if job.local_only:
+        raise ValueError('Zlecenie z lokalnego importu nie może być wysłane do Firebase.')
     updated = job.updated_at or db.get_job_updated_at(job.id or 0) or _now_iso()
     return {
         "local_id": job.id,
@@ -334,7 +336,7 @@ def _push_jobs(root) -> int:
     col = root.collection("jobs")
     n = 0
     for job in db.list_jobs(include_done=True):
-        if job.id is None:
+        if job.local_only or job.id is None:
             continue
         remote = col.document(str(job.id)).get()
         local_ts = job.updated_at or db.get_job_updated_at(job.id)
@@ -416,6 +418,8 @@ def _pull_jobs(root) -> int:
         if local_id is not None:
             local = db.get_job(local_id)
             if local is not None:
+                if local.local_only:
+                    continue
                 local_ts = local.updated_at or db.get_job_updated_at(local_id)
                 if not _is_newer(remote_ts, local_ts):
                     continue
@@ -456,7 +460,7 @@ def _sync_files(root, uid: str, storage_mod) -> tuple[int, int]:
         return 0, 0
 
     for job in db.list_jobs(include_done=True):
-        if job.id is None or not job.archive_path:
+        if job.local_only or job.id is None or not job.archive_path:
             continue
         local_dir = config.ARCHIVE_ROOT / job.archive_path / "dokumenty"
         if not local_dir.is_dir():
