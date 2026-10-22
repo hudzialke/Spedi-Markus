@@ -44,8 +44,8 @@ wymagają ręcznego doprecyzowania. Pełne okno czasowe zachowaj w uwagach.
   Bez LibreOffice zapisz plik lokalnie jako PDF lub DOCX.
 - Obrazy i skany: lokalny Tesseract z danymi pol, eng, deu, fra i ita
   (polski, angielski, niemiecki, francuski, włoski). Prywatny runtime projektu
-  znajduje się w `work/local-tools/tesseract/`; przyszłe wydanie EXE może go
-  dołączyć do swojego katalogu `tesseract/`. Program najpierw sprawdza prywatny
+  znajduje się w `work/local-tools/tesseract/`; wydanie EXE 0.2.0 zawiera go
+  w swoim katalogu `_internal/tesseract/`. Program najpierw sprawdza prywatny
   runtime, następnie PATH i Program Files/Tesseract-OCR. Pobieranie pakietów
   językowych nie jest wykonywane automatycznie podczas odczytu dokumentu.
 
@@ -64,7 +64,7 @@ Pliki podglądu mają limit 50 MB; obrazy 40 megapikseli.
 Prywatną wersję Tesseract 5.5.3.20260724 i pięć szybkich modeli językowych
 przygotowuje `python tools/setup_tesseract.py` (wymaga lokalnego 7-Zip).
 Skrypt pobiera wyłącznie oprogramowanie i modele z repozytoriów Tesseract,
-sprawdza SHA-256 instalatora i zapisuje wersję, rewizję modeli oraz ich sumy
+sprawdza SHA-256 instalatora i modeli, a także zapisuje wersję, rewizję modeli oraz ich sumy
 kontrolne w `spedi-runtime.json`. Nie uruchamia instalatora, nie zmienia PATH
 i nie przekazuje dokumentów. Po przygotowaniu OCR działa bez internetu.
 

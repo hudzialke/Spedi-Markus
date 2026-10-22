@@ -2,6 +2,8 @@ name: Tests
 on: [push, pull_request]
 permissions:
   contents: read
+env:
+  PYTHONUTF8: '1'
 jobs:
   desktop:
     runs-on: windows-latest
