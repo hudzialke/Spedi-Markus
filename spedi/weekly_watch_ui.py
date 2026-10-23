@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import sqlite3
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView,
@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
 )
 
 from brudnopis_ot.core.display_tz import format_dt
-from spedi.weekly_watch import COUNTRIES, WatchStore, calculate, country_code, history_revision, load_scenario
+from spedi.weekly_watch import COUNTRIES, WatchStore, calculate, country_code, history_revision
+from spedi.weekly_watch_tasks import WatchTask
 
 STATUS = {"yes": _tr("TAK"), "conditional": _tr("TAK WARUNKOWO"), "no": _tr("NIE — regularny"), "unknown": _tr("BRAK DANYCH")}
 COLORS = {"yes": "#128c7e", "conditional": "#8a5700", "no": "#be123c", "unknown": "#5a6672"}
@@ -30,7 +31,7 @@ class SortItem(QTableWidgetItem):
 
 
 class DriverOptionsDialog(QDialog):
-    def __init__(self, profile, scenario, options, parent=None):
+    def __init__(self, profile, scenario, options, parent=None, result=None):
         super().__init__(parent)
         self.setWindowTitle(_tr("Warunki skrócenia — ") + (profile.driver_name or profile.title))
         self.resize(640, 300)
@@ -46,7 +47,7 @@ class DriverOptionsDialog(QDialog):
         self.international = QCheckBox(_tr("Międzynarodowy przewóz rzeczy (warunek wyjątku 2× skrócony)"))
         self.international.setChecked(options.international_goods)
         form.addRow(self.international)
-        result = calculate(scenario, options)
+        result = result if result is not None else calculate(scenario, options)
         period = result.history_from.strftime("%d.%m.%Y") if result.history_from else "—"
         self.history = QCheckBox(_tr("Potwierdzam kompletną historię odpoczynków od ") + period)
         self.history.setChecked(options.verified_revision == history_revision(scenario))
@@ -84,6 +85,22 @@ class WeeklyWatchDialog(QDialog):
         self.profile_store = profile_store
         self.settings = WatchStore(profile_store.path)
         self._loading = False
+        self._worker = None
+        self._generation = 0
+        self._pending = False
+        self._closing = None
+        self._restore_key = None
+        self.profiles, self.results, self.scenarios, self.options = {}, {}, {}, {}
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(100)
+        self._refresh_timer.timeout.connect(self._start_worker)
+        self._version_connection = sqlite3.connect(profile_store.path.resolve().as_uri() + '?mode=ro', uri=True)
+        self._db_version = self._version_connection.execute('PRAGMA data_version').fetchone()[0]
+        self._version_timer = QTimer(self)
+        self._version_timer.setInterval(1000)
+        self._version_timer.timeout.connect(self._check_database)
+        self._version_timer.start()
         layout = QVBoxLayout(self)
         intro = QLabel(_tr("Ostateczny termin przyjazdu do domu / bazy i kolejnego OT • czas polski (Europe/Warsaw)"))
         layout.addWidget(intro)
@@ -118,6 +135,14 @@ class WeeklyWatchDialog(QDialog):
         layout.addWidget(self.table, 1)
         self.count = QLabel()
         layout.addWidget(self.count)
+        progress_bar = QHBoxLayout()
+        self.progress = QLabel()
+        progress_bar.addWidget(self.progress, 1)
+        self.cancel_button = QPushButton(_tr('Anuluj obliczenia'))
+        self.cancel_button.clicked.connect(self._cancel_calculation)
+        self.cancel_button.setEnabled(False)
+        progress_bar.addWidget(self.cancel_button)
+        layout.addLayout(progress_bar)
         self.detail = QLabel(_tr("Zaznacz wiersz, aby zobaczyć uzasadnienie. Dwuklik otwiera warunki skrócenia."))
         self.detail.setWordWrap(True)
         self.detail.setMinimumHeight(48)
@@ -134,80 +159,205 @@ class WeeklyWatchDialog(QDialog):
         layout.addWidget(buttons)
         self.reload()
 
-    def reload(self):
-        key = self._current_key()
+    def reload(self, *_, keep_rows=False):
+        if self._closing is not None:
+            return
+        self._generation += 1
+        self._restore_key = self._current_key() or self._restore_key
+        self._pending = True
+        self._failed_request = False
+        self._row_errors = 0
+        self._loading = True
+        self.results, self.scenarios, self.options = {}, {}, {}
+        if keep_rows:
+            for row in range(self.table.rowCount()):
+                for col in range(2, 10):
+                    self.table.item(row, col).setText(_tr('Oczekuje na obliczenie') if col == 5 else '…')
+                    self.table.item(row, col).setForeground(QColor(COLORS['unknown']))
+                    self.table.item(row, col).setToolTip('')
+        else:
+            self.table.setRowCount(0)
+        self._loading = False
+        self.progress.setText(_tr('Wczytuję listę i obliczam widocznych kierowców…'))
+        self.detail.setText(_tr('Wyniki pojawią się po zakończeniu obliczeń.'))
+        self.cancel_button.setEnabled(True)
+        if self._worker is not None:
+            self._worker.requestInterruption()
+        self._refresh_timer.start()
+
+    def _start_worker(self):
+        if self._worker is not None or not self._pending or self._closing is not None:
+            return
+        self._pending = False
+        worker = WatchTask(self.profile_store.path, self._generation,
+                           self.only_selected.isChecked(), self.search.text().casefold().strip(), self)
+        self._worker = worker
+        worker.profiles_ready.connect(self._profiles_ready)
+        worker.result_ready.connect(self._result_ready)
+        worker.row_failed.connect(self._row_failed)
+        worker.failed.connect(self._failed)
+        worker.invalidated.connect(self._invalidated)
+        worker.finished.connect(self._finished)
+        worker.start()
+
+    def _profiles_ready(self, generation, profiles):
+        if generation != self._generation or self._closing is not None:
+            return
         self._loading = True
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        self.profiles = {p.profile_key: p for p in self.profile_store.list_profiles()}
-        self.results = {}
-        for profile_key, profile in self.profiles.items():
-            options = self.settings.get(profile_key)
+        self.profiles = {profile.profile_key: profile for profile, _ in profiles}
+        self.options = {profile.profile_key: options for profile, options in profiles}
+        for profile, options in profiles:
             row = self.table.rowCount()
             self.table.insertRow(row)
             checked = QTableWidgetItem()
-            checked.setData(Qt.ItemDataRole.UserRole, profile_key)
+            checked.setData(Qt.ItemDataRole.UserRole, profile.profile_key)
             checked.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable)
             checked.setCheckState(Qt.CheckState.Checked if options.selected else Qt.CheckState.Unchecked)
             self.table.setItem(row, 0, checked)
-            name = profile.driver_name or profile.title
-            identity = _tr("ręczny") if profile.source_kind == "template" else (profile.card_number or profile.vehicle_plate or "DDD")
-            self.table.setItem(row, 1, QTableWidgetItem(f"{name} · {identity}"))
-            try:
-                scenario = load_scenario(self.profile_store, profile)
-                result = calculate(scenario, options)
-                issues = self.profile_store.get_data_issues(profile_key)
-                if issues and result.history_from:
-                    from spedi.weekly_watch import midnight
-                    if any(end > midnight(result.history_from) for _, end, _ in issues):
-                        result = replace(result, reduced="unknown", return_by=None,
-                                         return_compensation_minutes=0, return_rest_minutes=0,
-                                         return_reason=_tr("Powrót: rozbieżności danych DDD wymagają wyjaśnienia."),
-                                         reason=_tr("Import DDD zawiera oznaczone rozbieżności danych. Sprawdź je na osi i w lupie."))
-                self.results[profile_key] = result
-                values = [instant(result.start_by), instant(result.weekly_start_by),
-                          f"{result.compensation_minutes // 60}:{result.compensation_minutes % 60:02d}",
-                          STATUS[result.reduced], instant(result.last_activity), result.reason]
-                for col, value in enumerate(values, 2):
-                    item = SortItem(value) if col in (2, 3, 6) else QTableWidgetItem(value)
-                    if col in (2, 3, 6):
-                        dt = {2: result.start_by, 3: result.weekly_start_by, 6: result.last_activity}[col]
-                        item.setData(Qt.ItemDataRole.UserRole, dt.isoformat() if dt else "9999")
-                    item.setToolTip(result.reason)
-                    self.table.setItem(row, col, item)
-                self.table.item(row, 5).setForeground(QColor(COLORS[result.reduced]))
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
-                if result.start_by and result.start_by < now:
-                    self.table.item(row, 2).setForeground(QColor(COLORS["no"]))
-                    self.table.item(row, 2).setToolTip(_tr("Termin minął według zapisanej historii. ") + result.reason)
-                home = SortItem(instant(result.return_by) if result.return_by else _tr("BRAK DANYCH"))
-                home.setData(Qt.ItemDataRole.UserRole, result.return_by.isoformat() if result.return_by else "9999")
-                home.setToolTip(result.return_reason)
-                if result.return_by and result.return_by < now:
-                    home.setForeground(QColor(COLORS["no"]))
-                    home.setToolTip(_tr("Termin powrotu minął według zapisanej trasy. ") + result.return_reason)
-                self.table.setItem(row, 8, home)
-                comp = result.return_compensation_minutes
-                total = result.return_rest_minutes
-                duration = QTableWidgetItem(f"{total // 60}:{total % 60:02d} (45:00 + {comp // 60}:{comp % 60:02d})" if total else "—")
-                duration.setToolTip(result.return_reason)
-                self.table.setItem(row, 9, duration)
-            except Exception as exc:
-                self.table.setItem(row, 5, QTableWidgetItem(_tr("BŁĄD DANYCH")))
-                self.table.setItem(row, 7, QTableWidgetItem(str(exc)))
-                failed = SortItem(_tr("BŁĄD DANYCH"))
-                failed.setData(Qt.ItemDataRole.UserRole, "9999")
-                self.table.setItem(row, 8, failed)
-                self.table.setItem(row, 9, QTableWidgetItem("—"))
+            identity = _tr('ręczny') if profile.source_kind == 'template' else (profile.card_number or profile.vehicle_plate or 'DDD')
+            self.table.setItem(row, 1, QTableWidgetItem(f'{profile.driver_name or profile.title} · {identity}'))
+            for col in range(2, 10):
+                item = SortItem('…') if col in (2, 3, 6, 8) else QTableWidgetItem('…')
+                if col in (2, 3, 6, 8):
+                    item.setData(Qt.ItemDataRole.UserRole, '9999')
+                self.table.setItem(row, col, item)
+            self.table.item(row, 5).setText(_tr('Oczekuje na obliczenie'))
         for col, width in enumerate((76, 200, 150, 155, 110, 190, 150, 300, 170, 190)):
             self.table.setColumnWidth(col, width)
         self.table.setSortingEnabled(True)
         self.table.sortItems(8, Qt.SortOrder.AscendingOrder)
+        self._filter(schedule=False)
         self._loading = False
-        self._filter()
+        row = self._row(self._restore_key)
+        if row is not None:
+            self.table.selectRow(row)
+
+    def _row(self, key):
+        return next((row for row in range(self.table.rowCount())
+                     if self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) == key), None)
+
+    def _result_ready(self, generation, key, payload):
+        if generation != self._generation or self._closing is not None:
+            return
+        row = self._row(key)
+        if row is None:
+            return
+        result, scenario, options = payload
+        self.results[key], self.scenarios[key], self.options[key] = result, scenario, options
+        self._loading = True
+        self.table.setSortingEnabled(False)
+        values = [instant(result.start_by), instant(result.weekly_start_by),
+                  f"{result.compensation_minutes // 60}:{result.compensation_minutes % 60:02d}",
+                  STATUS[result.reduced], instant(result.last_activity), result.reason]
+        for col, value in enumerate(values, 2):
+            item = SortItem(value) if col in (2, 3, 6) else QTableWidgetItem(value)
+            if col in (2, 3, 6):
+                dt = {2: result.start_by, 3: result.weekly_start_by, 6: result.last_activity}[col]
+                item.setData(Qt.ItemDataRole.UserRole, dt.isoformat() if dt else "9999")
+            item.setToolTip(result.reason)
+            self.table.setItem(row, col, item)
+        self.table.item(row, 5).setForeground(QColor(COLORS[result.reduced]))
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if result.start_by and result.start_by < now:
+            self.table.item(row, 2).setForeground(QColor(COLORS["no"]))
+            self.table.item(row, 2).setToolTip(_tr("Termin minął według zapisanej historii. ") + result.reason)
+        home = SortItem(instant(result.return_by) if result.return_by else _tr("BRAK DANYCH"))
+        home.setData(Qt.ItemDataRole.UserRole, result.return_by.isoformat() if result.return_by else "9999")
+        home.setToolTip(result.return_reason)
+        if result.return_by and result.return_by < now:
+            home.setForeground(QColor(COLORS["no"]))
+            home.setToolTip(_tr("Termin powrotu minął według zapisanej trasy. ") + result.return_reason)
+        self.table.setItem(row, 8, home)
+        comp = result.return_compensation_minutes
+        total = result.return_rest_minutes
+        duration = QTableWidgetItem(f"{total // 60}:{total % 60:02d} (45:00 + {comp // 60}:{comp % 60:02d})" if total else "—")
+        duration.setToolTip(result.return_reason)
+        self.table.setItem(row, 9, duration)
+        self.table.setSortingEnabled(True)
+        self._loading = False
+        self.progress.setText(_tr('Obliczono widocznych kierowców: ') + str(len(self.results)))
+        self._details()
+
+    def _row_failed(self, generation, key, message):
+        if generation != self._generation:
+            return
+        row = self._row(key)
+        if row is not None:
+            self._row_errors += 1
+            self.table.item(row, 5).setText(_tr('BŁĄD DANYCH'))
+            self.table.item(row, 7).setText(message)
+
+    def _failed(self, generation, message):
+        if generation == self._generation:
+            self._failed_request = True
+            self.progress.setText(message)
+
+    def _invalidated(self, generation):
+        if generation == self._generation:
+            self.reload()
+
+    def _finished(self):
+        worker = self._worker
+        self._worker = None
+        worker.deleteLater()
+        if self._closing is not None:
+            result, self._closing = self._closing, None
+            self.done(result)
+        elif self._pending:
+            self._start_worker()
+        else:
+            self.cancel_button.setEnabled(False)
+            if worker.generation == self._generation and not self._failed_request:
+                if self._row_errors:
+                    self.progress.setText(_tr('Zakończono. Sprawdź wiersze oznaczone błędem.'))
+                elif self.results:
+                    self.progress.setText(_tr('Obliczono widocznych kierowców: ') + str(len(self.results)))
+                else:
+                    self.progress.setText(_tr('Brak widocznych kierowców do obliczenia.'))
+
+    def _cancel_calculation(self):
+        self._generation += 1
+        self._pending = False
+        self._refresh_timer.stop()
+        if self._worker is not None:
+            self._worker.requestInterruption()
+        self.cancel_button.setEnabled(False)
         for row in range(self.table.rowCount()):
-            if self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) == key:
-                self.table.selectRow(row)
+            key = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if key not in self.results:
+                self.table.item(row, 5).setText(_tr('Obliczenia anulowane'))
+        self.progress.setText(_tr('Obliczenia anulowane. Kliknij „Odśwież”, aby kontynuować.'))
+
+    def _check_database(self):
+        if self._version_connection is None or self._closing is not None:
+            return
+        try:
+            version = self._version_connection.execute('PRAGMA data_version').fetchone()[0]
+        except sqlite3.Error:
+            self._cancel_calculation()
+            self.results.clear()
+            self.table.setRowCount(0)
+            self.progress.setText(_tr('Utracono dostęp do bazy. Otwórz listę ponownie.'))
+            return
+        if version != self._db_version:
+            self._db_version = version
+            self.reload()
+
+    def done(self, result):
+        self._refresh_timer.stop()
+        self._version_timer.stop()
+        self._pending = False
+        self._generation += 1
+        if self._worker is not None:
+            self._closing = result
+            self._worker.requestInterruption()
+            return
+        if self._version_connection is not None:
+            self._version_connection.close()
+            self._version_connection = None
+        super().done(result)
 
     def _current_key(self):
         row = self.table.currentRow() if hasattr(self, "table") else -1
@@ -226,7 +376,7 @@ class WeeklyWatchDialog(QDialog):
             return
         self._filter()
 
-    def _filter(self):
+    def _filter(self, *_, schedule=True):
         text = self.search.text().casefold().strip()
         selected = visible = 0
         for row in range(self.table.rowCount()):
@@ -237,6 +387,9 @@ class WeeklyWatchDialog(QDialog):
             visible += show
         self.count.setText(f"{_tr('Wybrano: ')}{selected} • Widoczne: {visible} • Wszystkie profile: {self.table.rowCount()}" +
                            (_tr(" • Kliknij „Wybierz kierowców…”, aby dodać osoby do listy.") if not selected else ""))
+
+        if schedule and not self._loading:
+            self.reload(keep_rows=True)
 
     def _choose(self):
         self.only_selected.setChecked(False)
@@ -255,8 +408,11 @@ class WeeklyWatchDialog(QDialog):
             self.detail.setText(_tr("Najpierw zaznacz wiersz kierowcy."))
             return
         try:
-            scenario = load_scenario(self.profile_store, self.profiles[key])
-            dialog = DriverOptionsDialog(self.profiles[key], scenario, self.settings.get(key), self)
+            if key not in self.results:
+                self.detail.setText(_tr('Poczekaj na obliczenie wybranego kierowcy.'))
+                return
+            scenario = self.scenarios[key]
+            dialog = DriverOptionsDialog(self.profiles[key], scenario, self.options[key], self, result=self.results[key])
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self.settings.save(key, dialog.value())
                 self.reload()

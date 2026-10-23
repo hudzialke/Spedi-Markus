@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+from collections import OrderedDict
+from dataclasses import dataclass
 
 from PySide6.QtCore import QBuffer, QIODevice, QRectF, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
@@ -33,19 +35,37 @@ FIELDS = (
 REQUIRED = ('ref_numbers', 'client_name', 'load_address', 'load_datetime', 'unload_address', 'unload_datetime', 'pod_requirements')
 
 
-def pdf_text_in_rect(document: QPdfDocument, page: int, area: QRectF) -> str:
-    """Read ONLY characters inside the crop; never follow whole-page text flow."""
+@dataclass(frozen=True)
+class PdfTextIndex:
+    characters: tuple
+    whitespace: tuple[int, ...]
+
+
+def index_pdf_page(document: QPdfDocument, page: int, cancelled=lambda: False) -> PdfTextIndex | None:
+    """Prepare page geometry once. Contains value objects, never a shared PDF QObject."""
     all_text = document.getAllText(page)
     count = all_text.endIndex()
     if count > 30_000:
         raise ValueError(_tr('Strona ma zbyt wiele znaków. Użyj lokalnego OCR zaznaczenia lub wpisz treść ręcznie.'))
     chars = []
+    whitespace = [0]
     for index in range(max(0, count)):
+        if index % 16 == 0 and cancelled():
+            return None
         item = document.getSelectionAtIndex(page, index, 1)
         box = item.boundingRectangle()
         text = item.text()
-        if text and not box.isEmpty() and area.contains(box.center()) and not text.isspace():
+        whitespace.append(whitespace[-1] + int(any(c.isspace() for c in text)))
+        if text and not box.isEmpty() and not text.isspace():
             chars.append((box, text, index))
+    return PdfTextIndex(tuple(chars), tuple(whitespace))
+
+
+def pdf_text_in_rect(document: QPdfDocument | None, page: int, area: QRectF,
+                     prepared: PdfTextIndex | None = None) -> str:
+    """Read ONLY characters inside the crop; never follow whole-page text flow."""
+    prepared = prepared if prepared is not None else index_pdf_page(document, page)
+    chars = [item for item in prepared.characters if area.contains(item[0].center())]
     chars.sort(key=lambda item: (item[0].center().y(), item[0].left()))
     lines = []
     for box, text, index in chars:
@@ -65,8 +85,7 @@ def pdf_text_in_rect(document: QPdfDocument, page: int, area: QRectF) -> str:
                 # Glyph bounding boxes describe ink, not advances. Adding spaces
                 # from small geometric gaps breaks words such as UNLOAD or 12.
                 if index > previous_index + 1:
-                    gap = document.getSelectionAtIndex(page, previous_index+1, index-previous_index-1).text()
-                    if any(character.isspace() for character in gap):
+                    if prepared.whitespace[index] > prepared.whitespace[previous_index+1]:
                         result.append(' ')
                 elif box.left() - previous.right() > box.height():
                     result.append(' ')
@@ -75,6 +94,44 @@ def pdf_text_in_rect(document: QPdfDocument, page: int, area: QRectF) -> str:
             previous_index = index
         output.append(''.join(result))
     return '\n'.join(output).strip()
+
+
+class PdfPageTask(QThread):
+    rendered = Signal(int, object)
+    indexed = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self, path, page, generation, stamp, parent=None):
+        super().__init__(parent)
+        self.path, self.page, self.generation, self.stamp = path, page, generation, stamp
+
+    def run(self):
+        document = QPdfDocument()  # Created, used and closed in this thread only.
+        try:
+            def unchanged():
+                stat = self.path.stat()
+                return (stat.st_mtime_ns, stat.st_size) == self.stamp
+            if not unchanged() or document.load(str(self.path)) != QPdfDocument.Error.None_:
+                raise ValueError(_tr('Dokument zmienił się lub jest niedostępny. Otwórz go ponownie.'))
+            size = document.pagePointSize(self.page)
+            factor = min(1.6, 1800/max(size.width(), size.height()))
+            image = document.render(self.page, QSize(round(size.width()*factor), round(size.height()*factor)))
+            if self.isInterruptionRequested():
+                return
+            if image.isNull() or not unchanged():
+                raise ValueError(_tr('Nie udało się przygotować strony. Otwórz dokument ponownie.'))
+            self.rendered.emit(self.generation, image)
+            prepared = index_pdf_page(document, self.page, self.isInterruptionRequested)
+            if prepared is not None and not self.isInterruptionRequested():
+                if not unchanged():
+                    raise ValueError(_tr('Dokument zmienił się. Otwórz go ponownie.'))
+                self.indexed.emit(self.generation, prepared)
+        except ValueError as error:
+            self.failed.emit(self.generation, str(error))
+        except Exception:
+            self.failed.emit(self.generation, _tr('Nie można przygotować strony. Użyj OCR lub otwórz dokument ponownie.'))
+        finally:
+            document.close()
 
 
 class LocalTextPreview(QTextBrowser):
@@ -204,6 +261,14 @@ class DocumentImportDialog(QDialog):
         self._reader = None
         self._has_document = False
         self._applied = False
+        self._pdf_worker = None
+        self._pdf_generation = 0
+        self._pending_pdf = None
+        self._page_cache = OrderedDict()
+        self._page_index = None
+        self._pdf_index_failed = False
+        self._pending_region = None
+        self._closing = None
 
         root = QVBoxLayout(self)
         title = QLabel(_tr('Import z dokumentu'))
@@ -370,6 +435,9 @@ class DocumentImportDialog(QDialog):
             QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
     def _clear_document(self):
+        self._cancel_pdf()
+        self._page_cache.clear()
+        self._page_index = None
         self.pdf.close()
         self.sections = []
         self.source_path = None
@@ -430,6 +498,9 @@ class DocumentImportDialog(QDialog):
         if self.pdf.load(str(path)) != QPdfDocument.Error.None_ or not self.pdf.pageCount():
             raise ValueError(_tr('Nie można otworzyć PDF. Sprawdź, czy plik jest poprawny i nie wymaga hasła.'))
         self.pdf_mode = True
+        self._pdf_path = Path(path)
+        stat = self._pdf_path.stat()
+        self._pdf_stamp = (stat.st_mtime_ns, stat.st_size)
         self._has_document = True
         self.page_combo.blockSignals(True)
         self.page_combo.clear()
@@ -487,6 +558,10 @@ class DocumentImportDialog(QDialog):
         self.file_label.setText(_tr('Obraz ze schowka · tylko lokalnie'))
 
     def _show_page(self, index):
+        self._cancel_pdf()
+        self._page_index = None
+        self._pdf_index_failed = False
+        self._pending_region = None
         self.selection.clear()
         self._selected_source = {}
         self._crop = QImage()
@@ -494,14 +569,18 @@ class DocumentImportDialog(QDialog):
         if index < 0:
             return
         if self.pdf_mode:
-            size = self.pdf.pagePointSize(index)
-            if size.isEmpty():
-                return
-            factor = min(1.6, 1800/max(size.width(), size.height()))
-            image = self.pdf.render(index, QSize(round(size.width()*factor), round(size.height()*factor)))
-            self.canvas.set_image(image, self._canvas_zoom(image))
             self.preview_stack.setCurrentWidget(self.canvas_scroll)
-            self.status.setText(_tr('Zaznacz prostokąt wokół jednego adresu lub warunku. Tekst z PDF zostanie odczytany bez OCR.'))
+            cached = self._page_cache.get(index)
+            if cached is not None:
+                self._page_cache.move_to_end(index)
+                image, self._page_index = cached
+                self.canvas.set_image(image, self._canvas_zoom(image))
+                self.status.setText(_tr('Zaznacz prostokąt wokół jednego adresu lub warunku. Tekst z PDF zostanie odczytany bez OCR.'))
+            else:
+                self.canvas.set_image(QImage())
+                self.status.setText(_tr('Przygotowuję stronę PDF w tle… Możesz zmienić stronę lub zamknąć okno.'))
+                self._pending_pdf = (index, self._pdf_generation)
+                self._start_pdf()
         elif self.sections:
             self.text_preview.setHtml(self.sections[index].html)
             self.preview_stack.setCurrentWidget(self.text_preview)
@@ -510,6 +589,65 @@ class DocumentImportDialog(QDialog):
             self.preview_stack.setCurrentWidget(self.canvas_scroll)
             self.status.setText(_tr('Zaznacz obszar obrazu, następnie uruchom lokalny OCR lub wpisz treść ręcznie.'))
         self._update_progress()
+
+    def _cancel_pdf(self):
+        self._pdf_generation += 1
+        self._pending_pdf = None
+        self._pending_region = None
+        if self._pdf_worker is not None:
+            self._pdf_worker.requestInterruption()
+
+    def _start_pdf(self):
+        if self._pdf_worker is not None or self._pending_pdf is None or self._closing is not None:
+            return
+        page, generation = self._pending_pdf
+        self._pending_pdf = None
+        worker = PdfPageTask(self._pdf_path, page, generation, self._pdf_stamp, self)
+        self._pdf_worker = worker
+        worker.rendered.connect(self._pdf_rendered)
+        worker.indexed.connect(self._pdf_indexed)
+        worker.failed.connect(self._pdf_failed)
+        worker.finished.connect(self._pdf_finished)
+        worker.start()
+
+    def _pdf_rendered(self, generation, image):
+        if generation != self._pdf_generation or self._closing is not None:
+            return
+        self.canvas.set_image(image, self._canvas_zoom(image))
+        self.status.setText(_tr('Strona gotowa. Przygotowuję tekst w tle; możesz już zaznaczyć obszar.'))
+
+    def _pdf_indexed(self, generation, prepared):
+        if generation != self._pdf_generation or self._closing is not None:
+            return
+        self._page_index = prepared
+        page = self.page_combo.currentIndex()
+        self._page_cache[page] = (self.canvas.image, prepared)
+        self._page_cache.move_to_end(page)
+        while len(self._page_cache) > 3:
+            self._page_cache.popitem(last=False)
+        if not self._busy():
+            self.status.setText(_tr('Tekst strony gotowy. Zaznacz fragment i przypisz do pola.'))
+        if self._pending_region is not None:
+            region = self._pending_region
+            self._pending_region = None
+            self._region(region)
+
+    def _pdf_failed(self, generation, message):
+        if generation == self._pdf_generation and self._closing is None:
+            self._pdf_index_failed = True
+            self._pending_region = None
+            self.status.setText(message)
+
+    def _pdf_finished(self):
+        worker = self._pdf_worker
+        self._pdf_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if self._closing is not None:
+            result, self._closing = self._closing, None
+            self.done(result)
+        else:
+            self._start_pdf()
 
     def _zoom(self):
         if self.preview_stack.currentWidget() == self.text_preview:
@@ -543,11 +681,18 @@ class DocumentImportDialog(QDialog):
         self._crop = image.copy(area.toAlignedRect())
         self.ocr_btn.setEnabled(not self._crop.isNull())
         if self.pdf_mode:
+            if self._page_index is None:
+                if self._pdf_index_failed:
+                    self.status.setText(_tr('Tekst strony jest niedostępny. Użyj OCR zaznaczenia lub wpisz treść ręcznie.'))
+                    return
+                self._pending_region = QRectF(normalized)
+                self.status.setText(_tr('Przygotowuję tekst strony. Odczytam ostatnie zaznaczenie po zakończeniu.'))
+                return
             size = self.pdf.pagePointSize(self.page_combo.currentIndex())
             pdf_area = QRectF(normalized.x()*size.width(), normalized.y()*size.height(),
                              normalized.width()*size.width(), normalized.height()*size.height())
             try:
-                text = pdf_text_in_rect(self.pdf, self.page_combo.currentIndex(), pdf_area)
+                text = pdf_text_in_rect(None, self.page_combo.currentIndex(), pdf_area, self._page_index)
             except ValueError as error:
                 self.status.setText(str(error))
                 return
@@ -573,6 +718,7 @@ class DocumentImportDialog(QDialog):
         if not readers.tesseract_path():
             self.status.setText(_tr('Nie znaleziono Tesseract OCR. Zainstaluj go lokalnie albo wpisz treść zaznaczenia ręcznie.'))
             return
+        self._pending_region = None
         self._ocr = OcrTask(self._crop, self)
         self._ocr.succeeded.connect(self._ocr_ready)
         self._ocr.failed.connect(self.status.setText)
@@ -586,6 +732,7 @@ class DocumentImportDialog(QDialog):
         self.status.setText(_tr('Sprawdź wynik OCR przed przypisaniem.') if text else _tr('OCR nie znalazł tekstu. Popraw zaznaczenie lub wpisz treść ręcznie.'))
 
     def _selection_edited(self):
+        self._pending_region = None
         self.assign_btn.setEnabled(bool(self.selection.toPlainText().strip()) and not self._busy())
 
     def _activate(self, index):
@@ -679,6 +826,12 @@ class DocumentImportDialog(QDialog):
         if self._busy():
             self.status.setText(_tr('Poczekaj na zakończenie lokalnego odczytu (maksymalnie 60 sekund).'))
             return
+        self._cancel_pdf()
+        if self._pdf_worker is not None:
+            self._closing = result
+            self.status.setText(_tr('Kończę przygotowanie strony…'))
+            return
+        self._page_cache.clear()
         self.pdf.close()
         self._temporary.cleanup()
         super().done(result)

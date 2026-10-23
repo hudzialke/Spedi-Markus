@@ -23,6 +23,16 @@ zlecenia oraz rozliczenie frachtu. W `mobile/` znajduje się **Spedi Android App
 modeli sztucznej inteligencji (AI). Autorstwo komponentów zewnętrznych opisuje
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Zobacz, jak działa Spedi
+
+Import dokumentu obok formularza, zapis wymagań POD, lista OT,
+analiza aktywności DDD, ewidencja miesiąca i rozliczenie frachtu.
+Wszystkie przykłady wykorzystują całkowicie fikcyjne dane.
+
+![Import dokumentu do zlecenia w Spedi](docs/showcase/assets/07-import.png)
+
+[**Zobacz pokaz funkcji i animację importu →**](docs/showcase/README.pl.md)
+
 ## Licencja i odpowiedzialność
 
 Projekt udostępniono na [licencji MIT](LICENSE). Można go używać, kopiować,

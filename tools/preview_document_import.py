@@ -1,12 +1,16 @@
 """Render the importer with a synthetic PDF only; never opens the user's database."""
 from pathlib import Path
 import os
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def main():
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     os.environ.setdefault('SPEDI_LANGUAGE', 'pl')
-    from PySide6.QtCore import QRectF
+    from PySide6.QtCore import QRectF, QThread
+    from time import monotonic
     from PySide6.QtWidgets import QApplication
     from reportlab.pdfgen.canvas import Canvas
     from markus_dispatcher.ui.document_import_dialog import DocumentImportDialog, FIELDS
@@ -48,6 +52,12 @@ def main():
     dialog = DocumentImportDialog()
     dialog.show()
     dialog.open_path(document)
+    deadline = monotonic()+20
+    while dialog._pdf_worker is not None:
+        if monotonic() > deadline:
+            raise RuntimeError('Synthetic PDF preview timed out')
+        app.processEvents()
+        QThread.msleep(5)
     dialog.zoom_combo.setCurrentIndex(0)
     for key, value in {'ref_numbers':'DEMO/1042/2026', 'client_name':'Synthetic Logistics',
                        'load_address':'Demo Street 12\n00-001 Warsaw, PL', 'load_datetime':'26.10.2026 08:00',

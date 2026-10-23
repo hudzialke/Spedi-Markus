@@ -62,7 +62,7 @@ def test_pdf_rectangles_keep_columns_separate_even_with_interleaved_text(app, co
     document.close()
 
 
-def test_pdf_mapping_clears_selection_on_page_change_and_retains_source(app, columns_pdf):
+def test_pdf_mapping_clears_selection_on_page_change_and_retains_source(app, columns_pdf, wait_for):
     from PySide6.QtCore import QRectF
     from markus_dispatcher.ui.document_import_dialog import DocumentImportDialog, FIELDS
     dialog = DocumentImportDialog()
@@ -70,6 +70,7 @@ def test_pdf_mapping_clears_selection_on_page_change_and_retains_source(app, col
     assert dialog.pdf.pageCount() == 2
     dialog._activate(next(i for i,(key,_) in enumerate(FIELDS) if key == 'load_address'))
     dialog._region(QRectF(40/600, 80/800, 220/600, 80/800))
+    wait_for(lambda: dialog._pdf_worker is None)
     dialog.assign_selection()
     assert dialog.values['load_address'] == 'LOAD Demo A\nTest Street 12'
     assert dialog.sources['load_address']['page'] == 1
@@ -78,6 +79,7 @@ def test_pdf_mapping_clears_selection_on_page_change_and_retains_source(app, col
     assert not dialog.selection.toPlainText()
     assert dialog._crop.isNull()
     assert not dialog.ocr_btn.isEnabled()
+    wait_for(lambda: dialog._pdf_worker is None)
     dialog.reject()
 
 

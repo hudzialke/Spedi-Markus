@@ -276,7 +276,7 @@ def app(monkeypatch):
     return QApplication.instance() or QApplication([])
 
 
-def test_dialog_selection_filter_sorting_and_reopen(app, tmp_path):
+def test_dialog_selection_filter_sorting_and_reopen(app, tmp_path, wait_for):
     from PySide6.QtCore import Qt
     from spedi.weekly_watch_ui import WeeklyWatchDialog
     store = DddProfileStore(tmp_path / "profiles.sqlite")
@@ -286,14 +286,19 @@ def test_dialog_selection_filter_sorting_and_reopen(app, tmp_path):
     sc.title = "Jan"
     store.save_template_scenario(first.profile_key, sc)
     dialog = WeeklyWatchDialog(store)
+    wait_for(lambda: dialog._worker is None and not dialog._pending)
     assert all(dialog.table.isRowHidden(r) for r in range(2))
+    assert dialog.progress.text() == 'Brak widocznych kierowców do obliczenia.'
     dialog._choose()
+    wait_for(lambda: dialog._worker is None and not dialog._pending)
     for row in range(2):
         if dialog.table.item(row, 0).data(Qt.ItemDataRole.UserRole) == first.profile_key:
             dialog.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
     dialog.only_selected.setChecked(True)
+    wait_for(lambda: dialog._worker is None and not dialog._pending)
     assert sum(not dialog.table.isRowHidden(r) for r in range(2)) == 1
     dialog.reload()
+    wait_for(lambda: dialog._worker is None and not dialog._pending)
     assert sum(not dialog.table.isRowHidden(r) for r in range(2)) == 1
     assert dialog.settings.get(first.profile_key).selected
     assert dialog.table.item(0, 2).text() != "—"
@@ -329,15 +334,16 @@ def test_failed_autosave_does_not_display_stale_schedule(monkeypatch):
     assert not opened
 
 
-def test_import_conflicts_cannot_show_green_permission(app, tmp_path):
+def test_import_conflicts_cannot_show_green_permission(app, tmp_path, wait_for):
     from spedi.weekly_watch_ui import WeeklyWatchDialog
     store = DddProfileStore(tmp_path / "profiles.sqlite")
     profile = store.create_template("Jan", date(2026, 8, 3))
     sc = scenario(45, 24, 45)
     store.save_template_scenario(profile.profile_key, sc)
-    WatchStore(store.path).save(profile.profile_key, confirmed(sc))
+    WatchStore(store.path).save(profile.profile_key, replace(confirmed(sc), selected=True))
     store.add_data_issue(profile.profile_key, sc.blocks[-1].start, sc.blocks[-1].end, "conflict")
     dialog = WeeklyWatchDialog(store)
+    wait_for(lambda: dialog._worker is None and not dialog._pending)
     assert dialog.results[profile.profile_key].reduced == "unknown"
     assert dialog.results[profile.profile_key].return_by is None
     dialog.close()
@@ -426,15 +432,16 @@ def test_return_calendar_deadline_uses_warsaw_across_dst():
     assert result.return_by + timedelta(hours=66) == datetime(2026, 11, 1, 23)
 
 
-def test_dialog_puts_return_and_duration_first_and_marks_overdue(app, tmp_path):
+def test_dialog_puts_return_and_duration_first_and_marks_overdue(app, tmp_path, wait_for):
     from PySide6.QtCore import Qt
     from spedi.weekly_watch_ui import WeeklyWatchDialog, COLORS, instant
     store = DddProfileStore(tmp_path / "return.sqlite")
     profile = store.create_template("Powrót", date(2026, 8, 3))
     sc = scenario(24, 45, 24)
     store.save_template_scenario(profile.profile_key, sc)
-    WatchStore(store.path).save(profile.profile_key, confirmed(sc))
+    WatchStore(store.path).save(profile.profile_key, replace(confirmed(sc), selected=True))
     dialog = WeeklyWatchDialog(store)
+    wait_for(lambda: dialog._worker is None and not dialog._pending)
     result = dialog.results[profile.profile_key]
     assert dialog.table.horizontalHeader().visualIndex(8) == 2
     assert dialog.table.item(0, 8).text() == instant(result.return_by)
@@ -444,5 +451,6 @@ def test_dialog_puts_return_and_duration_first_and_marks_overdue(app, tmp_path):
     assert result.return_reason in dialog.detail.text()
     dialog.table.sortItems(8, Qt.SortOrder.DescendingOrder)
     dialog.reload()
+    wait_for(lambda: dialog._worker is None and not dialog._pending)
     assert dialog.results[profile.profile_key].return_by == result.return_by
     dialog.close()

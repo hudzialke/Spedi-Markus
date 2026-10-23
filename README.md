@@ -23,6 +23,16 @@ MarkusDispatcher) in `mobile/` provides orders, deadlines and local reminders.
 artificial intelligence (AI) models. Third-party authorship is documented in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## See Spedi in action
+
+Import order details from a document, keep POD requirements with the order,
+review weekly rest deadlines, analyze DDD activities, prepare monthly working
+time records and calculate freight settlements. All examples use fictional data.
+
+![Importing document details into a Spedi order](docs/showcase/assets/07-import.png)
+
+[**Explore the features and import demo →**](docs/showcase/README.md)
+
 ## License and responsibility
 
 Released under the [MIT License](LICENSE). You may use, copy, modify and

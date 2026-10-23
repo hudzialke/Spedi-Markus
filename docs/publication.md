@@ -29,3 +29,13 @@ Nie dodawaj katalogów `dane`, `ddd_files`, `ewidencja`, `raporty`, starych
 instalatorów, APK ani lokalnej konfiguracji. Klucze API, konta serwisowe,
 tokeny i bazy pozostają prywatne. `.gitignore` jest dodatkowym zabezpieczeniem,
 a nie zamiennikiem kontroli plików i historii Git.
+
+## Synthetic showcase assets
+
+The PNG/GIF files in `docs/showcase/assets/` were captured from real application
+widgets populated only with generated fictional fixtures. The capture process
+uses isolated data/settings directories and blocks network connections.
+The exporter accepts only the explicitly reviewed asset paths and SHA-256
+digests in `SHOWCASE_ASSETS`. Other screenshots are excluded; changing an
+approved image requires another review and a digest update. Demo databases,
+intermediate source PDFs and working files are not published.

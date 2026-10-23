@@ -44,6 +44,10 @@ CREDENTIAL_PATTERNS = [
     re.compile(rb'"(?:access_token|refresh_token)"\s*:\s*"[^"\r\n]{15,}'),
 ]
 
+# Only reviewed, generated showcase images may be published from docs/.
+# Digests are filled after the explicit review; arbitrary screenshots stay out.
+SHOWCASE_ASSETS: dict[str, str] = {'docs/showcase/assets/01-brudnopis.png': 'a1e2e130f8582e8cdc263ce5ac971779faf926e30d865183af95b419255cae34', 'docs/showcase/assets/02-lista-ot.png': '9e00d8af955100dac5e2d43713b440d17e8c5ef927cada198f4f8e28c27efca2', 'docs/showcase/assets/03-ddd.png': '77c4b271b1463b0ce0f240b4806fc361f309dbd28d3022f17f029449d37eba4f', 'docs/showcase/assets/04-ewidentor.png': 'b24d5e177f1423260527ffcf02afa48a7bb8fd7e7d08dd525b17ec8222bf14eb', 'docs/showcase/assets/04b-ewidentor-lista.png': 'cdfdbc273497dcbd6c76974986f860f4b396ac63b321d13eab2500b32d2537cb', 'docs/showcase/assets/05-dispatcher.png': '3e939f753cc4cb24f586d6d27e1b98cb969c344993b51a8d2497daf123e292f0', 'docs/showcase/assets/06-pod.png': 'a71c9d609affcb7ba5bf77901d3daddc91278ef2344f0c677a226d7242d85e5c', 'docs/showcase/assets/07-import.png': '6eddf55a461b5bdd7c31f2186e3d91dcdbdf53455183e0f37ad8e9f572c8f578', 'docs/showcase/assets/08-rozliczenie.png': '2c404e6e5c8889a5a00df43e8f1774ea2cae1223ca403eba8e744055a8227abe', 'docs/showcase/assets/import-demo.gif': '677badf3785f6f54d2d7e0de73180415bf62d9259fd4327921bf8059051e7eca'}
+
 
 def ignored(parts: tuple[str, ...]) -> bool:
     return any(part in SKIP_DIRS or part.endswith('.egg-info') for part in parts)
@@ -72,6 +76,12 @@ def selected_files(root: Path) -> list[Path]:
             if path.is_symlink():
                 raise ValueError(f'Symlink not allowed: {relative}')
             if not path.is_file() or ignored(relative.parts):
+                continue
+            approved_digest = SHOWCASE_ASSETS.get(relative.as_posix())
+            if approved_digest:
+                if hashlib.sha256(path.read_bytes()).hexdigest() != approved_digest:
+                    raise ValueError(f'Showcase asset changed; review required: {relative.as_posix()}')
+                result.append(path)
                 continue
             if private_name(path) or path.suffix.lower() not in extensions:
                 continue

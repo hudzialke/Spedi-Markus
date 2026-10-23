@@ -1,8 +1,9 @@
 from pathlib import Path
+import hashlib
 
 import pytest
 
-from tools.public_export import ROOT_FILES, audit, export, selected_files
+from tools.public_export import ROOT_FILES, SHOWCASE_ASSETS, audit, export, selected_files
 
 
 def source_tree(tmp_path):
@@ -60,3 +61,34 @@ def test_public_verification_key_is_allowed_but_private_key_is_rejected(tmp_path
     assert audit(root) == []
     path.write_text('-----BEGIN ' + 'PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----')
     assert audit(root) == ['Credential pattern: spedi/_vendor/tachograph/certs/public.pem']
+
+
+def test_showcase_exports_only_reviewed_asset_and_excludes_working_data(tmp_path, monkeypatch):
+    root = source_tree(tmp_path)
+    relative = 'docs/showcase/assets/approved.png'
+    image = root / relative
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b'generated fictional image fixture')
+    monkeypatch.setitem(SHOWCASE_ASSETS, relative, hashlib.sha256(image.read_bytes()).hexdigest())
+    (image.parent / 'unreviewed.png').write_bytes(b'unreviewed screenshot fixture')
+    (image.parent / 'demo.sqlite').write_bytes(b'working database fixture')
+    destination = tmp_path / 'public'
+    export(root, destination)
+    assert (destination / relative).read_bytes() == image.read_bytes()
+    assert not (destination / image.parent.relative_to(root) / 'unreviewed.png').exists()
+    assert not (destination / image.parent.relative_to(root) / 'demo.sqlite').exists()
+    assert audit(destination) == []
+
+
+def test_replacing_reviewed_showcase_image_requires_new_review(tmp_path, monkeypatch):
+    root = source_tree(tmp_path)
+    relative = 'docs/showcase/assets/approved.png'
+    image = root / relative
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b'generated fictional image fixture')
+    monkeypatch.setitem(SHOWCASE_ASSETS, relative, hashlib.sha256(image.read_bytes()).hexdigest())
+    image.write_bytes(b'replacement screenshot fixture')
+    destination = tmp_path / 'public'
+    with pytest.raises(ValueError, match='Showcase asset changed; review required'):
+        export(root, destination)
+    assert not destination.exists()

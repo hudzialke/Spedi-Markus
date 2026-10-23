@@ -25,7 +25,8 @@ def run(report_path: str) -> int:
             os.environ['SPEDI_LANGUAGE'] = 'pl'
 
             from PySide6.QtWidgets import QApplication
-            from PySide6.QtCore import QRectF
+            from PySide6.QtCore import QRectF, QThread
+            import time
             from PySide6.QtPdf import QPdfDocument
             from reportlab.pdfgen.canvas import Canvas
             from markus_dispatcher.ui.document_import_dialog import (
@@ -53,10 +54,40 @@ def run(report_path: str) -> int:
             dialog = DocumentImportDialog()
             dialog.open_path(pdf_path)
             assert dialog.pdf.pageCount() == 1
-            dialog.pdf.close()
+            deadline = time.monotonic() + 15
+            while dialog._pdf_worker is not None:
+                assert time.monotonic() < deadline
+                app.processEvents()
+                QThread.msleep(5)
+            assert dialog._page_index is not None
+            dialog._region(QRectF(40/600, 80/800, 220/600, 80/800))
+            assert dialog.selection.toPlainText() == 'LOAD DEMO\nTest Street 12'
             dialog.reject()
             app.processEvents()
             report['checks'].append('pdf-columns-and-import-dialog')
+
+            from datetime import date, datetime, timedelta
+            from dataclasses import replace
+            from brudnopis_ot.core.models import Scenario, Block, ActivityKind
+            from brudnopis_ot.core.ddd_store import DddProfileStore
+            from spedi.weekly_watch import WatchStore, WatchOptions
+            from spedi.weekly_watch_ui import WeeklyWatchDialog
+            store = DddProfileStore(root/'synthetic.sqlite')
+            driver = store.create_template('SYNTHETIC', date(2026, 8, 3))
+            start = datetime(2026, 8, 7, 12)
+            scenario = Scenario(week_start=date(2026, 8, 3), title='SYNTHETIC',
+                                blocks=[Block(ActivityKind.REST, start, start+timedelta(hours=45))])
+            store.save_template_scenario(driver.profile_key, scenario)
+            WatchStore(store.path).save(driver.profile_key, WatchOptions(selected=True))
+            watch = WeeklyWatchDialog(store)
+            deadline = time.monotonic()+15
+            while watch._worker is not None or watch._pending:
+                assert time.monotonic() < deadline
+                app.processEvents()
+                QThread.msleep(5)
+            assert driver.profile_key in watch.results
+            watch.reject()
+            report['checks'].append('background-weekly-watch')
 
             workbook = Workbook()
             workbook.active['A1'] = 'SYNTHETIC POD'
