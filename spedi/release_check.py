@@ -118,6 +118,28 @@ def run(report_path: str) -> int:
             import ewidentor
             import google_auth_oauthlib.flow
             report['checks'].append('application-modules')
+            # Exercise this release's DDD fix in the frozen binary as well.
+            from ddd_analyzer.adapter import parse_tacho_result
+            from ddd_analyzer.models import DddFileKind
+            from brudnopis_ot.core.ddd_file_loader import load_ddd_file
+            from brudnopis_ot.ui.activity_end_dialog import ActivityEndDialog
+            from ewidentor.core.brudnopis_import import load_month_segments
+            card_path = root / 'C_synthetic.ddd'
+            card_path.write_bytes(b'synthetic-self-test')
+            raw = {'driver': {'card_number': '1111222233334444', 'surname': 'SYNTHETIC'},
+                   'activities': [{'date': '2026-10-26', 'changes': [
+                       {'time': '00:00', 'activity': 'REST'}, {'time': '09:59', 'activity': 'AVAILABLE'}]}]}
+            card = parse_tacho_result(raw, str(card_path), DddFileKind.CARD)
+            profile = store.upsert(load_ddd_file(card_path, _analysis=card))
+            assert profile.open_activity.start == datetime(2026, 10, 26, 9, 59)
+            end_dialog = ActivityEndDialog(profile.open_activity, zone='UTC', confirmed_end=datetime(2026, 10, 26, 14, 3))
+            end_dialog.accept()
+            store.confirm_activity_end(profile.profile_key, profile.open_activity, end_dialog.end_utc)
+            assert max(s.end_minute for s in store.get(profile.profile_key).segments) == 599
+            rows = load_month_segments(store.path, profile.profile_key, 2026, 10)
+            assert sum(s.end_minute-s.start_minute for s in rows if s.activity == 'availability') == 244
+            assert not any(b.kind == ActivityKind.AVAILABILITY for b in store.load_ddd_scenario(profile.profile_key, original=True).blocks)
+            report['checks'].append('ddd-open-activity-and-confirmed-end')
             report['ok'] = True
     except Exception as error:
         # Exception text can contain paths; keep the report free of user data.

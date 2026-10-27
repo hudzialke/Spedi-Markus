@@ -747,5 +747,13 @@
   "Utracono dostęp do bazy. Otwórz listę ponownie.": "Database access was lost. Open the list again.",
   "Poczekaj na obliczenie wybranego kierowcy.": "Wait for the selected driver's calculation to finish.",
   "Nie można obliczyć profilu. Odśwież listę i sprawdź dane kierowcy.": "The profile could not be calculated. Refresh the list and check the driver's data.",
-  "Nie można odczytać listy OT. Odśwież listę i sprawdź dostęp do bazy.": "The weekly rest list could not be read. Refresh the list and check database access."
+  "Nie można odczytać listy OT. Odśwież listę i sprawdź dostęp do bazy.": "The weekly rest list could not be read. Refresh the list and check database access.",
+  "Koniec ostatniej aktywności": "Terminal activity end",
+  "DDD podaje początek tej czynności. Wpisz potwierdzony koniec; uzupełnienie zostanie zapisane oddzielnie od oryginału DDD.": "The DDD records the start of this activity. Enter a confirmed end; the supplement is stored separately from the original DDD.",
+  "Koniec musi być późniejszy niż początek aktywności.": "The end must be later than the activity start.",
+  "Ustaw koniec…": "Set end…",
+  "Potwierdzony koniec: ": "Confirmed end: ",
+  "Brak potwierdzonego końca — czas trwania nie jest jeszcze liczony.": "No confirmed end — duration is not included in totals yet.",
+  "Nieznany koniec": "Unknown end",
+  "Nieustalony": "Undetermined"
 }

@@ -142,11 +142,21 @@ def load_month_segments(
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT day, activity, start_minute, end_minute FROM segments "
-            "WHERE profile_key = ? AND day LIKE ? "
+            "WHERE profile_key = ? "
             "ORDER BY day, start_minute, end_minute",
-            (profile_key, prefix + "%"),
+            (profile_key,),
         ).fetchall()
-    return [
+        confirmations = []
+        pending = None
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='ddd_activity_ends'").fetchone():
+            confirmations = conn.execute('SELECT start, activity, end FROM ddd_activity_ends WHERE profile_key=?', (profile_key,)).fetchall()
+            import json
+            from ddd_analyzer.models import ActivityType, OpenActivity
+            data = conn.execute('SELECT open_activity_json FROM profiles WHERE profile_key=?', (profile_key,)).fetchone()
+            if data and data[0]:
+                record = json.loads(data[0])
+                pending = OpenActivity(ActivityType(record['activity']), datetime.fromisoformat(record['start']))
+    segments = [
         RawSegment(
             day=date.fromisoformat(r["day"]),
             activity=str(r["activity"]),
@@ -155,6 +165,9 @@ def load_month_segments(
         )
         for r in rows
     ]
+    from brudnopis_ot.core.activity_ends import confirmed_segments
+    segments.extend(confirmed_segments(segments, confirmations, pending))
+    return sorted((s for s in segments if s.day.isoformat().startswith(prefix)), key=lambda s: (s.day, s.start_minute, s.end_minute))
 
 
 def load_month_border_crossings(

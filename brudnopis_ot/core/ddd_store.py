@@ -123,6 +123,8 @@ class DddProfileStore:
             self._ensure_column(conn, "border_crossings", "source", "TEXT NOT NULL DEFAULT 'card'")
             self._ensure_column(conn, "profiles", "cycle_start", "TEXT")
             self._ensure_column(conn, "profiles", "scenario_json", "TEXT")
+            self._ensure_column(conn, "profiles", "open_activity_json", "TEXT")
+            self._ensure_column(conn, "profiles", "open_activity_checked", "INTEGER NOT NULL DEFAULT 0")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS archived_files (
@@ -146,6 +148,14 @@ class DddProfileStore:
                     reason TEXT NOT NULL,
                     UNIQUE(profile_key, start, end, reason)
                 );
+                CREATE TABLE IF NOT EXISTS ddd_activity_ends (
+                    profile_key TEXT NOT NULL REFERENCES profiles(profile_key) ON DELETE CASCADE,
+                    start TEXT NOT NULL,
+                    activity TEXT NOT NULL,
+                    end TEXT NOT NULL,
+                    confirmed_at TEXT NOT NULL,
+                    PRIMARY KEY(profile_key, start, activity)
+                );
                 """
             )
 
@@ -155,6 +165,8 @@ class DddProfileStore:
         if profile is None or profile.source_kind == 'template':
             raise ValueError('Wybierz profil DDD.')
         source = original_scenario(profile)
+        if not original:
+            source = self._with_confirmed_activity_ends(profile, source)
         with self._connect() as conn:
             row = conn.execute('SELECT * FROM ddd_scenario_edits WHERE profile_key=?', (profile_key,)).fetchone()
         if not original and row:
@@ -173,9 +185,50 @@ class DddProfileStore:
             raise ValueError('Wybierz profil DDD.')
         with self._connect() as conn:
             conn.execute('INSERT OR REPLACE INTO ddd_scenario_edits VALUES (?, ?, ?)',
-                         (profile_key, json.dumps(scenario_to_dict(original_scenario(profile)), ensure_ascii=False),
+                         (profile_key, json.dumps(scenario_to_dict(self._with_confirmed_activity_ends(profile, original_scenario(profile))), ensure_ascii=False),
                           json.dumps(scenario_to_dict(scenario), ensure_ascii=False)))
             self.set_cycle_start(profile_key, scenario.week_start)
+
+    def set_open_activity(self, profile_key, activity) -> None:
+        """Metadata-only recovery never rewrites closed history or corrections."""
+        payload = json.dumps({'activity': activity.activity.value, 'start': activity.start.isoformat()}) if activity else None
+        with self._connect() as conn:
+            conn.execute('UPDATE profiles SET open_activity_json=?, open_activity_checked=1 WHERE profile_key=?',
+                         (payload, profile_key))
+
+    def get_confirmed_activity_end(self, profile_key, activity) -> datetime | None:
+        if activity is None:
+            return None
+        with self._connect() as conn:
+            row = conn.execute('SELECT end FROM ddd_activity_ends WHERE profile_key=? AND start=? AND activity=?',
+                               (profile_key, activity.start.isoformat(), activity.activity.value)).fetchone()
+        return datetime.fromisoformat(row['end']) if row else None
+
+    def confirm_activity_end(self, profile_key, expected_activity, end: datetime) -> None:
+        """An explicit user supplement, separate from raw DDD and measurable totals."""
+        with self._connect() as conn:
+            profile = self.get(profile_key)
+            if profile is None or expected_activity is None or profile.open_activity != expected_activity:
+                raise ValueError('Ostatnia aktywność zmieniła się. Wczytaj profil ponownie.')
+            if end.tzinfo is not None or end.second or end.microsecond or end <= expected_activity.start:
+                raise ValueError('Koniec musi być późniejszy niż początek, z dokładnością do minuty (UTC).')
+            conn.execute('INSERT OR REPLACE INTO ddd_activity_ends VALUES (?, ?, ?, ?, ?)',
+                         (profile_key, expected_activity.start.isoformat(), expected_activity.activity.value,
+                          end.isoformat(), datetime.now().isoformat(timespec='seconds')))
+
+    def _with_confirmed_activity_ends(self, profile, scenario):
+        from dataclasses import replace
+        from brudnopis_ot.core.activity_ends import confirmed_segments
+        from brudnopis_ot.core.ddd_blocks import segments_to_blocks
+        from brudnopis_ot.core.profile_scenario import stable_id
+        with self._connect() as conn:
+            rows = conn.execute('SELECT start, activity, end FROM ddd_activity_ends WHERE profile_key=? ORDER BY start',
+                                (profile.profile_key,)).fetchall()
+        additions = segments_to_blocks(confirmed_segments(profile.segments, rows, profile.open_activity))
+        for block in additions:
+            block.label = 'Koniec potwierdzony przez użytkownika'
+            block.id = 'confirmed_' + stable_id(block)
+        return replace(scenario, blocks=sorted([*scenario.blocks, *additions], key=lambda b: (b.start, b.end)))
 
     def add_data_issue(self, profile_key: str, start: datetime, end: datetime, reason: str) -> None:
         with self._connect() as conn:
@@ -298,6 +351,8 @@ class DddProfileStore:
         except sqlite3.OperationalError:
             gnss_points = []
         filenames = tuple(json.loads(meta["filenames_json"] or "[]"))
+        from ddd_analyzer.models import OpenActivity, ActivityType
+        pending = json.loads(meta['open_activity_json']) if meta['open_activity_json'] else None
         return DddLoadResult(
             template_id=profile_key.removeprefix("template:") if meta["source_kind"] == "template" else None,
             segments=segments,
@@ -312,6 +367,7 @@ class DddProfileStore:
             border_crossings=tuple(crossings),
             places=tuple(places),
             gnss_points=tuple(gnss_points),
+            open_activity=OpenActivity(ActivityType(pending['activity']), datetime.fromisoformat(pending['start'])) if pending else None,
         )
 
     def upsert(self, profile: DddLoadResult) -> DddLoadResult:
@@ -349,6 +405,7 @@ class DddProfileStore:
                 ),
             )
             conn.execute("DELETE FROM segments WHERE profile_key = ?", (profile.profile_key,))
+            self.set_open_activity(profile.profile_key, profile.open_activity)
             conn.executemany(
                 "INSERT INTO segments (profile_key, day, activity, start_minute, end_minute) "
                 "VALUES (?, ?, ?, ?, ?)",

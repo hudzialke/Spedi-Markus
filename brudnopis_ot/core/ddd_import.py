@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-from brudnopis_ot.core.ddd_file_loader import DddLoadError, load_ddd_profiles, merge_load_into_profile
+from brudnopis_ot.core.ddd_file_loader import DddLoadError, load_ddd_profiles, merge_load_into_profile, merge_open_activity
 
 
 @dataclass
@@ -32,11 +32,14 @@ def _snapshot(profile):
     from dataclasses import asdict
     data = asdict(profile)
     data.pop('title', None)
+    # Recovered last-change metadata is not a manual edit of closed raw intervals.
+    data.pop('open_activity', None)
     return _canonical_snapshot(json.dumps(data, default=str, sort_keys=True, ensure_ascii=False))
 
 
 def _canonical_snapshot(value):
     data = json.loads(value)
+    data.pop('open_activity', None)
     # Source collections describe evidence, not UI ordering. Old ledgers could
     # store parser order while SQLite returns chronological order.
     for key, items in data.items():
@@ -164,7 +167,7 @@ def import_files(store, paths, *, loader=load_ddd_profiles):
             warnings = []
             with store._connect() as conn:
                 for part in parts:
-                    if part.source_kind == 'template' or not part.card_number or not part.segments:
+                    if part.source_kind == 'template' or not part.card_number or not (part.segments or part.open_activity):
                         raise DddLoadError("Brak pewnej tożsamości kierowcy lub aktywności")
                     key = part.profile_key
                     old = store.get(key)
@@ -173,7 +176,11 @@ def import_files(store, paths, *, loader=load_ddd_profiles):
                         archive = Path(prior['stored_path'])
                         if not archive.is_file() or sha256(archive.read_bytes()).hexdigest() != digest:
                             raise DddLoadError("Brak lub uszkodzenie archiwum. Użyj odświeżenia po przywróceniu pliku źródłowego.")
-                        saved_profiles[key] = old
+                        if old is None:
+                            raise DddLoadError('Brak profilu dla zarejestrowanego źródła DDD.')
+                        pending = merge_open_activity(old.open_activity, part.open_activity, old.segments)
+                        store.set_open_activity(key, pending)
+                        saved_profiles[key] = store.get(key)
                         continue
                     baseline = conn.execute("SELECT * FROM ddd_baselines WHERE profile_key=?", (key,)).fetchone()
                     manual_raw = bool(old and baseline and not _baseline_matches(baseline, old))
@@ -193,7 +200,7 @@ def import_files(store, paths, *, loader=load_ddd_profiles):
                     issues = []
                     empty = replace(part, segments=[], filenames=(), border_crossings=(), places=(), gnss_points=())
                     merged, conflicts = _merge_legacy(old or empty, part, issues)
-                    if not merged.segments:
+                    if not merged.segments and merged.open_activity is None:
                         raise DddLoadError('Brak poprawnych segmentów aktywności w pliku.')
                     saved = store.upsert(merged)
                     for start, end, reason in issues:
@@ -222,6 +229,40 @@ def import_files(store, paths, *, loader=load_ddd_profiles):
         except Exception as exc:
             report.errors.append(f"{path.name}: {exc}")
     return report
+
+
+def recover_open_activity(store, key, *, loader=load_ddd_profiles):
+    """Recover only last-change metadata from hash-verified archives of old profiles."""
+    old = store.get(key)
+    if old is None or old.source_kind != 'card':
+        return old
+    with store._connect() as conn:
+        checked = conn.execute('SELECT open_activity_checked FROM profiles WHERE profile_key=?', (key,)).fetchone()[0]
+        if checked:
+            return old
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='ddd_sources'").fetchone():
+            return old
+        rows = conn.execute('SELECT * FROM ddd_sources WHERE profile_key=? ORDER BY rowid DESC', (key,)).fetchall()
+        for row in rows:
+            path = Path(row['stored_path'])
+            if not path.is_file() or sha256(path.read_bytes()).hexdigest() != row['digest']:
+                continue
+            try:
+                parts = [p for p in loader(path) if p.profile_key == key]
+            except (DddLoadError, ValueError, OSError):
+                # A failed optional metadata recovery must not hide the saved profile.
+                continue
+            if len(parts) != 1:
+                continue
+            part = parts[0]
+            if old.date_to and (part.date_to is None or part.date_to < old.date_to):
+                continue
+            pending = merge_open_activity(old.open_activity, part.open_activity, old.segments)
+            if pending is not None or (part.segments and old.segments and
+                    max((s.day, s.end_minute) for s in part.segments) >= max((s.day, s.end_minute) for s in old.segments)):
+                store.set_open_activity(key, pending)
+                return store.get(key)
+    return old
 
 
 def refresh_profile(store, key, *, loader=load_ddd_profiles):

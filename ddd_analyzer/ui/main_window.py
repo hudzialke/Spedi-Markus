@@ -349,6 +349,11 @@ class MainWindow(QMainWindow):
             border_crossings=[BorderCrossing(c.occurred_at, c.country_left, c.country_entered, c.odometer_km, source=c.source) for c in profile.border_crossings],
             places=[PlaceRecord(p.occurred_at, p.entry_type, p.country_code, p.odometer_km) for p in profile.places],
             gnss_points=[GnssPoint(p.occurred_at, p.latitude, p.longitude, p.odometer_km) for p in profile.gnss_points])
+        analysis.open_activity = profile.open_activity
+        if analysis.open_activity and not any(s.day == analysis.open_activity.start.date() for s in analysis.daily_summaries):
+            from ddd_analyzer.models import DailySummary
+            analysis.daily_summaries.append(DailySummary(analysis.open_activity.start.date()))
+            analysis.daily_summaries.sort(key=lambda s: s.day)
         self._card = analysis if kind == DddFileKind.CARD else None
         self._vu = analysis if kind == DddFileKind.VU else None
         self.card_drop.setText(_tr("Karta: profil scalony") if self._card else _tr("Karta"))
@@ -513,7 +518,7 @@ class MainWindow(QMainWindow):
         self.summary.set_summaries(active.daily_summaries, week)
         if self.summary.table.rowCount() > 0:
             self.summary.table.selectRow(self.summary.table.rowCount() - 1)
-        self.timeline.set_day(anchor, active.segments, zone=self._zone)
+        self.timeline.set_day(anchor, active.segments, zone=self._zone, open_activity=active.open_activity)
 
         night_analysis = analyze_night_work(active.segments, zone=self._zone)
 
@@ -526,6 +531,9 @@ class MainWindow(QMainWindow):
                 f"  |  OSTRZEZENIE: {len(night_analysis.violations)} naruszen "
                 f"limitu 10 h w porze nocnej"
             )
+        if active.open_activity:
+            from ddd_analyzer.models import ACTIVITY_LABELS_PL
+            status += f" | {ACTIVITY_LABELS_PL[active.open_activity.activity]} {format_dt(active.open_activity.start, self._zone)} · {_tr('Nieznany koniec')}"
         self.btn_rest.setEnabled(True)
         self.btn_night.setEnabled(True)
         self.statusBar().showMessage(status)
@@ -547,4 +555,4 @@ class MainWindow(QMainWindow):
             return
         day = self.summary.selected_day()
         if day:
-            self.timeline.set_day(day, self._active.segments, zone=self._zone)
+            self.timeline.set_day(day, self._active.segments, zone=self._zone, open_activity=self._active.open_activity)

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from brudnopis_ot.core.hudonizator_reader import RawSegment
+from ddd_analyzer.models import OpenActivity
 
 SourceKind = Literal["card", "vu", "template"]
 
@@ -69,6 +70,7 @@ class DddLoadResult:
     gnss_points: tuple[GnssPointRecord, ...] = ()
 
     template_id: str | None = None
+    open_activity: OpenActivity | None = None
 
     @property
     def filename(self) -> str:
@@ -122,6 +124,23 @@ def _normalize_plate(plate: str | None) -> str:
     if not plate:
         return ""
     return "".join(str(plate).split()).upper()
+
+
+def merge_open_activity(existing: OpenActivity | None, incoming: OpenActivity | None,
+                        segments: list[RawSegment]) -> OpenActivity | None:
+    candidates = [item for item in (existing, incoming) if item is not None]
+    if not candidates:
+        return None
+    latest = max(item.start for item in candidates)
+    at_latest = [item for item in candidates if item.start == latest]
+    if len({item.activity for item in at_latest}) != 1:
+        raise DddLoadError('Sprzeczne ostatnie aktywności DDD.')
+    # A later source has already supplied measurable coverage of this change.
+    from datetime import timedelta
+    if any(datetime.combine(s.day, datetime.min.time()) + timedelta(minutes=s.end_minute) > latest
+           for s in segments):
+        return None
+    return at_latest[0]
 
 
 def replace_range(
@@ -303,7 +322,7 @@ def load_ddd_file(path: str | Path, *, _analysis=None) -> DddLoadResult:
 
     if source_kind == "card" and not card:
         raise DddLoadError("Brak pewnego numeru karty kierowcy; profil nie został utworzony.")
-    if not segments:
+    if not segments and analysis.open_activity is None:
         raise DddLoadError("Brak poprawnych segmentów aktywności w pliku.")
     if source_kind == "vu" and not plate:
         raise DddLoadError(
@@ -330,6 +349,7 @@ def load_ddd_file(path: str | Path, *, _analysis=None) -> DddLoadResult:
         border_crossings=crossings,
         places=places,
         gnss_points=gnss_points,
+        open_activity=analysis.open_activity,
     )
 
 
@@ -344,8 +364,10 @@ def _merge_parts(parts: list[DddLoadResult]) -> DddLoadResult:
     crossings: tuple[BorderCrossingRecord, ...] = ()
     places: tuple[PlaceRecord, ...] = ()
     gnss_points: tuple[GnssPointRecord, ...] = ()
+    open_activity = None
     for part in ordered:
         segments = replace_range(segments, part.segments, part.date_from, part.date_to)
+        open_activity = merge_open_activity(open_activity, part.open_activity, segments)
         crossings = replace_crossings_range(
             crossings, part.border_crossings, part.date_from, part.date_to
         )
@@ -392,6 +414,7 @@ def _merge_parts(parts: list[DddLoadResult]) -> DddLoadResult:
         border_crossings=crossings,
         places=places,
         gnss_points=gnss_points,
+        open_activity=open_activity,
     )
 
 
@@ -567,6 +590,7 @@ def merge_load_into_profile(
     return replace(
         existing,
         segments=segments,
+        open_activity=merge_open_activity(existing.open_activity, incoming.open_activity, segments),
         border_crossings=crossings,
         places=places,
         gnss_points=gnss_points,

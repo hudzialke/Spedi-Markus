@@ -14,6 +14,8 @@ from ddd_analyzer.models import (
     DddFileKind,
     DriverInfo,
     GnssPoint,
+    OpenActivity,
+    DailySummary,
     PlaceRecord,
     VehicleRef,
 )
@@ -196,6 +198,24 @@ def activity_recording_end(raw: dict, file_kind: DddFileKind) -> datetime | None
     bounds = [_as_utc_naive(dt) for value in values if (dt := _parse_iso_dt(value)) is not None]
     # Contradictory VU bounds must never extend coverage beyond either bound.
     return min(bounds) if bounds else last_change
+
+
+def open_card_activity(raw: dict, cutoff: datetime | None, file_kind: DddFileKind) -> OpenActivity | None:
+    """Keep the known last card change separately from measurable intervals."""
+    if file_kind != DddFileKind.CARD or cutoff is None:
+        return None
+    changes = [(datetime.combine(_parse_day(day['date']), datetime.min.time())
+                + timedelta(minutes=_parse_time_minutes(change['time'])), change)
+               for day in raw.get('activities') or [] for change in day.get('changes') or []]
+    if not changes:
+        return None
+    last = max(instant for instant, _ in changes)
+    if _as_utc_naive(cutoff) > last:
+        return None
+    kinds = {_map_activity(change.get('activity', 'UNKNOWN')) for instant, change in changes if instant == last}
+    if len(kinds) != 1:
+        raise ValueError('Sprzeczne ostatnie aktywności karty DDD.')
+    return OpenActivity(kinds.pop(), last)
 
 
 def apply_activity_cutoff(
@@ -433,8 +453,14 @@ def parse_tacho_result(raw: dict[str, Any], source_path: str, file_kind: DddFile
 
     cutoff = activity_recording_end(raw, file_kind)
     segments = clip_segments_to_cutoff(segments, cutoff)
+    open_activity = open_card_activity(raw, cutoff, file_kind)
     daily_summaries = build_daily_summaries(segments, odometer_by_day)
+    if open_activity and not any(s.day == open_activity.start.date() for s in daily_summaries):
+        daily_summaries.append(DailySummary(day=open_activity.start.date()))
+        daily_summaries.sort(key=lambda s: s.day)
     days = [s.day for s in segments]
+    if open_activity:
+        days.append(open_activity.start.date())
     date_range = (min(days), max(days)) if days else (None, None)
     border_crossings = _border_crossings_from_raw(raw)
     places = _places_from_raw(raw)
@@ -462,6 +488,7 @@ def parse_tacho_result(raw: dict[str, Any], source_path: str, file_kind: DddFile
         border_crossings=border_crossings,
         places=places,
         gnss_points=gnss_points,
+        open_activity=open_activity,
     )
 
     if file_kind == DddFileKind.VU:

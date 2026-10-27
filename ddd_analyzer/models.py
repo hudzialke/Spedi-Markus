@@ -83,6 +83,14 @@ class ActivitySegment:
         return max(0, self.end_minute - self.start_minute)
 
 
+@dataclass(frozen=True, slots=True)
+class OpenActivity:
+    """A recorded change whose end is unknown; start is canonical naive UTC."""
+
+    activity: ActivityType
+    start: datetime
+
+
 @dataclass(slots=True)
 class BorderCrossing:
     """Przekroczenie granicy (karta 0x052A / VU 0x22 / wyliczone z GNSS)."""
@@ -186,10 +194,11 @@ class DddAnalysis:
     border_crossings: list[BorderCrossing] = field(default_factory=list)
     places: list[PlaceRecord] = field(default_factory=list)
     gnss_points: list[GnssPoint] = field(default_factory=list)
+    open_activity: OpenActivity | None = None
 
     @property
     def activity_days(self) -> list[date]:
-        return sorted({s.day for s in self.segments})
+        return sorted({s.day for s in self.segments} | ({self.open_activity.start.date()} if self.open_activity else set()))
 
 
 @dataclass(slots=True)

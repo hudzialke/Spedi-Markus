@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from ddd_analyzer.models import ACTIVITY_COLORS, ACTIVITY_LABELS_PL, ActivitySegment, ActivityType
 from ddd_analyzer.display_tz import DEFAULT_ZONE, DisplayZone
+from ddd_analyzer.display_tz import format_dt
 from ddd_analyzer.summarize import format_minutes, segment_time_label, segments_for_day
 
 
@@ -27,6 +28,7 @@ class TimelineWidget(QWidget):
         self._segments: list[ActivitySegment] = []
         self._day: date | None = None
         self._zone: DisplayZone = DEFAULT_ZONE
+        self._open_activity = None
         self.setMinimumHeight(120)
 
         layout = QVBoxLayout(self)
@@ -65,10 +67,12 @@ class TimelineWidget(QWidget):
         segments: list[ActivitySegment],
         *,
         zone: DisplayZone = DEFAULT_ZONE,
+        open_activity=None,
     ) -> None:
         self._day = day
         self._zone = zone
         self._segments = segments_for_day(segments, day)
+        self._open_activity = open_activity if open_activity and open_activity.start.date() == day else None
         zone_note = "UTC" if zone == "UTC" else "PL"
         self.title.setText(f"{_tr('Oś czasu — ')}{day.strftime('%d.%m.%Y')} ({zone_note})")
         self.canvas.set_segments(self._segments)
@@ -76,7 +80,7 @@ class TimelineWidget(QWidget):
         self._fill_blocks_table()
 
     def _fill_blocks_table(self) -> None:
-        self.blocks_table.setRowCount(len(self._segments))
+        self.blocks_table.setRowCount(len(self._segments) + int(self._open_activity is not None))
         for row, segment in enumerate(self._segments):
             start, end, duration = segment_time_label(segment, self._zone)
             label = ACTIVITY_LABELS_PL[segment.activity]
@@ -92,6 +96,12 @@ class TimelineWidget(QWidget):
                     font.setBold(True)
                     item.setFont(font)
                 self.blocks_table.setItem(row, col, item)
+        if self._open_activity:
+            row = len(self._segments)
+            values = [format_dt(self._open_activity.start, self._zone, '%H:%M'),
+                      _tr('Nieznany koniec'), ACTIVITY_LABELS_PL[self._open_activity.activity], _tr('Nieustalony')]
+            for col, value in enumerate(values):
+                self.blocks_table.setItem(row, col, QTableWidgetItem(value))
 
 
 class _TimelineCanvas(QWidget):

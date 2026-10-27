@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QInputDialog,
+    QPushButton,
     QMenu,
     QMessageBox,
     QScrollArea,
@@ -168,6 +169,17 @@ class MainWindow(QMainWindow):
         center = QWidget()
         center_layout = QVBoxLayout(center)
         center_layout.addLayout(zoom_row)
+        self._open_activity_row = QWidget()
+        pending_layout = QHBoxLayout(self._open_activity_row)
+        pending_layout.setContentsMargins(0, 0, 0, 0)
+        self._open_activity_label = QLabel()
+        self._open_activity_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._open_activity_label.setWordWrap(True)
+        pending_layout.addWidget(self._open_activity_label, stretch=1)
+        self._activity_end_button = QPushButton(_tr('Ustaw koniec…'))
+        self._activity_end_button.clicked.connect(self._confirm_open_activity_end)
+        pending_layout.addWidget(self._activity_end_button)
+        center_layout.addWidget(self._open_activity_row)
         center_layout.addWidget(scroll, stretch=1)
         center_layout.addWidget(self.legend)
 
@@ -442,6 +454,8 @@ class MainWindow(QMainWindow):
     def _apply_ddd_profile(
         self, loaded: DddLoadResult, *, ask_cycle: bool = False
     ) -> None:
+        from brudnopis_ot.core.ddd_import import recover_open_activity
+        loaded = recover_open_activity(self._ddd_store, loaded.profile_key) or loaded
         self._ddd_profile = loaded
         if not any(p.profile_key == loaded.profile_key for p in self._ddd_session):
             self._ddd_session = sorted(
@@ -500,12 +514,46 @@ class MainWindow(QMainWindow):
             f"DDD ({kind}): {loaded.profile_label} · {loaded.filename}{span} · {len(loaded.segments)}{_tr(' segmentów')}",
             8000,
         )
-        if not loaded.segments:
+        if not loaded.segments and loaded.open_activity is None:
             QMessageBox.information(
                 self,
                 _tr("Plik DDD"),
                 f"{_tr('Brak segmentów aktywności w: ')}{loaded.filename}",
             )
+
+    def _confirm_open_activity_end(self) -> None:
+        from brudnopis_ot.ui.activity_end_dialog import ActivityEndDialog
+        if not self._ddd_profile or self._ddd_read_only() or not self._ddd_profile.open_activity:
+            return
+        activity = self._ddd_profile.open_activity
+        dialog = ActivityEndDialog(activity, zone=self._zone,
+            confirmed_end=self._ddd_store.get_confirmed_activity_end(self._ddd_profile.profile_key, activity), parent=self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        try:
+            if self._dirty and not self._persist_ddd():
+                return
+            self._ddd_store.confirm_activity_end(self._ddd_profile.profile_key, activity, dialog.end_utc)
+            self._apply_ddd_profile(self._ddd_store.get(self._ddd_profile.profile_key))
+        except Exception as exc:
+            QMessageBox.warning(self, _tr('Koniec ostatniej aktywności'), str(exc))
+
+    def _refresh_open_activity(self):
+        from ddd_analyzer.models import ACTIVITY_LABELS_PL
+        from brudnopis_ot.core.display_tz import format_dt
+        pending = self._ddd_profile.open_activity if self._ddd_profile else None
+        self._open_activity_row.setVisible(pending is not None)
+        if pending is None:
+            return
+        end = self._ddd_store.get_confirmed_activity_end(self._ddd_profile.profile_key, pending) if self._ddd_modified else None
+        text = f'{ACTIVITY_LABELS_PL[pending.activity]} · {format_dt(pending.start, self._zone)} · {zone_label(self._zone)}'
+        if end:
+            minutes = int((end - pending.start).total_seconds() // 60)
+            text += f" · {_tr('Potwierdzony koniec: ')}{format_dt(end, self._zone)} ({minutes // 60}:{minutes % 60:02d})"
+        else:
+            text += ' · ' + _tr('Brak potwierdzonego końca — czas trwania nie jest jeszcze liczony.')
+        self._open_activity_label.setText(text)
+        self._activity_end_button.setEnabled(self._ddd_modified)
 
     def _pick_ddd_profile(
         self,
@@ -745,6 +793,7 @@ class MainWindow(QMainWindow):
 
     def _refresh(self) -> None:
         is_ddd = self._ddd_profile is not None and not self._is_template()
+        self._refresh_open_activity()
         self._ddd_view.setEnabled(is_ddd)
         self._cycle_edit.setEnabled(not self._ddd_read_only())
         self.grid.editable = not self._ddd_read_only()
