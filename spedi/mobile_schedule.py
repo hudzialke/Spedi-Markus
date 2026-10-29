@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from brudnopis_ot.core.models import Scenario
 from brudnopis_ot.core.serialize import scenario_to_dict
 
-from spedi.mobile_rules import analyze_scenario
+from brudnopis_ot.core.weekly_rules import analyze_scenario
 
 WARSAW = ZoneInfo("Europe/Warsaw")
 
@@ -46,30 +46,29 @@ def build_driver_schedule(
     *, profile_key: str, display_name: str, scenario: Scenario,
     cycle_known: bool, planned_return_at: str | None = None,
     departure_at: str | None = None,
+    watch_options=None,
 ) -> dict[str, Any]:
     from brudnopis_ot.core.models import copy_scenario
     full = copy_scenario(scenario)
     view = copy_scenario(full)
     view.set_axis_monday(view.week_start)  # Same projection as 'Zmodyfikowany'.
-    pending = []
-    result = analyze_scenario(view, pending_debts=pending)
+    result = analyze_scenario(view)
     anchor = full.get_block(full.anchor_block_id) if full.anchor_block_id else None
     week4 = full.week_start + timedelta(weeks=3)
     week4_start = datetime.combine(week4, time.min, tzinfo=WARSAW)
     # The open 6×24h window belongs to the last weekly rest, not a historical
     # anchor window appended by the engine. A planned future rest remains a plan.
-    weekly = [rest for rest in result.weekly_rests if rest.is_weekly]
-    rest_ref = weekly[-1].end if weekly else (anchor.start if anchor else None)
-    next_rest = rest_ref + timedelta(days=6) if rest_ref else None
+    from spedi.weekly_watch import WatchOptions, calculate
+    obligations = calculate(full, watch_options or WatchOptions())
+    home = obligations if cycle_known else None
+    next_rest = obligations.weekly_start_by
     debts = [{
         "source_block_ids": list(debt.source_rest_ids),
-        "remaining_minutes": round(debt.remaining * 60),
+        "remaining_minutes": debt.remaining_minutes,
         "compensation_due_at": utc_iso(debt.deadline),
         "latest_compensation_start_at": utc_iso(debt.latest_start),
-        "mobility_pair": debt.from_pm_pair,
-    } for debt in pending]
-    latest_starts = [debt.latest_start for debt in pending if debt.latest_start]
-    rest_candidates = [value for value in [next_rest, *latest_starts] if value]
+        "mobility_pair": debt.mobility_pair,
+    } for debt in obligations.pending_compensations]
     payload: dict[str, Any] = {
         "schema_version": 1,
         "profile_key": profile_key,
@@ -85,7 +84,13 @@ def build_driver_schedule(
         "planned_return_at": _planned_instant(planned_return_at),
         "departure_at": _planned_instant(departure_at),
         "next_weekly_rest_start_by": utc_iso(next_rest),
-        "rest_start_by": utc_iso(min(rest_candidates)) if rest_candidates else None,
+        "rest_start_by": utc_iso(obligations.start_by),
+        # Arrival and the start of the 45h base are different obligations.
+        # Reuse the watchlist's planner instead of duplicating its calculation.
+        "home_return_by": utc_iso(home.return_by) if home else None,
+        "home_return_reason": home.return_reason if home else "",
+        "home_return_compensation_minutes": home.return_compensation_minutes if home else 0,
+        "home_return_rest_minutes": home.return_rest_minutes if home else 0,
         "pending_compensations": debts,
         "findings": [{"code": f.code, "severity": f.severity,
                       "message": f.message_pl, "block_ids": list(f.related_block_ids)}
@@ -107,6 +112,8 @@ def build_driver_documents(store, plans_by_profile=None, *, include_scenario=Tru
     or creates a user's database. Dispatcher driver IDs are a separate namespace.
     """
     documents = {}
+    from spedi.weekly_watch import WatchStore
+    watch = WatchStore(store.path)
     for profile in store.list_profile_summaries():
         plan = (plans_by_profile or {}).get(profile.profile_key, {})
         scenario = (store.load_template_scenario(profile.profile_key)
@@ -119,6 +126,7 @@ def build_driver_documents(store, plans_by_profile=None, *, include_scenario=Tru
             cycle_known=store.get_cycle_start(profile.profile_key) is not None,
             planned_return_at=plan.get("planned_return_at"),
             departure_at=plan.get("departure_at"),
+            watch_options=watch.get(profile.profile_key),
         )
         if not include_scenario:
             # The revision still covers the full scenario, but one-way phone

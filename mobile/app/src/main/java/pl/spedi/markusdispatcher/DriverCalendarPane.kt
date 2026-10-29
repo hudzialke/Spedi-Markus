@@ -153,6 +153,8 @@ private fun DriverDetails(driver: DriverSchedule, now: Instant, preferences: Dri
         item { DriverField("Start wyjazdu", formatDriverInstant(driver.departure)) }
         if (driver.departure == null && driver.anchor != null) item { DriverField("Kotwica w Brudnopisie", formatDriverInstant(driver.anchor)) }
         item { DriverField("Powrót planowany", formatDriverInstant(driver.plannedReturn)) }
+        item { DriverField("Powrót do domu / bazy · najpóźniej", formatDriverInstant(driver.homeReturnBy)) }
+        if (driver.homeReturnReason.isNotBlank()) item { Text(driver.homeReturnReason, fontSize = 13.sp) }
         item { DriverField("OT z rekompensatami · najpóźniej", formatDriverInstant(driver.restStartBy)) }
         if ("rest_start_by" in preferences.overrides) item { DriverField("Termin OT z Brudnopisu", formatDriverInstant(driver.sourceRestStartBy)) }
         item { DriverField("Kolejny OT · 6×24 h", formatDriverInstant(driver.nextWeeklyRest)) }

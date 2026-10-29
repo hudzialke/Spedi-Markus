@@ -135,13 +135,32 @@ def test_lightweight_phone_publication_keeps_full_revision_without_retaining_tim
     assert published_document(lightweight[key]) == published_document(full[key])
 
 
-def test_snapshot_engine_has_no_rule_changes_and_detects_upstream_drift():
-    expected = inspect.getsource(weekly_rules).replace(
-        "    zone: DisplayZone = DEFAULT_ZONE,",
-        "    zone: DisplayZone = DEFAULT_ZONE,\n    pending_debts: list[_Debt] | None = None,",
-    ).replace("    remaining = open_debts",
-              "    remaining = open_debts\n    if pending_debts is not None:\n        pending_debts.extend(remaining)")
-    expected = "# Snapshot of Brudnopis weekly_rules, 2026-10-07. Only adds structured pending_debts output.\n" + expected
-    assert Path(mobile_rules.__file__).read_text(encoding="utf-8") == expected
+def test_every_consumer_uses_the_same_authoritative_rule_functions():
+    from brudnopis_ot.core import validator
+    from spedi import weekly_watch, mobile_schedule
+    assert mobile_rules.analyze_scenario is weekly_rules.analyze_scenario
+    assert weekly_watch.analyze_scenario is weekly_rules.analyze_scenario
+    assert mobile_schedule.analyze_scenario is weekly_rules.analyze_scenario
+    assert validator.analyze_scenario is weekly_rules.analyze_scenario
+    assert mobile_rules._Debt is weekly_rules._Debt
     for sc in [pair_scenario(), Scenario(week_start=date(2026, 9, 21))]:
         assert mobile_rules.analyze_scenario(sc) == weekly_rules.analyze_scenario(sc)
+
+
+def test_phone_and_watchlist_share_the_home_return_plan():
+    from spedi.weekly_watch import calculate, WatchOptions, history_revision
+    from tests.test_compensation_assignment import crossing_history
+    for sc in (pair_scenario(), crossing_history()):
+        options = WatchOptions(verified_revision=history_revision(sc))
+        result = calculate(sc, options)
+        phone = schedule(sc, watch_options=options)
+        from spedi.mobile_schedule import utc_iso
+        assert phone['home_return_by'] == utc_iso(result.return_by)
+        assert phone['home_return_reason'] == result.return_reason
+        assert phone['home_return_rest_minutes'] == result.return_rest_minutes
+
+
+def test_missing_cycle_never_exports_a_guessed_home_return():
+    document = build_driver_schedule(profile_key='demo', display_name='Synthetic',
+                                    scenario=pair_scenario(), cycle_known=False)
+    assert document['home_return_by'] is None

@@ -8,6 +8,7 @@ import json
 from PySide6.QtCore import QBuffer, QDate, QDateTime, QIODevice, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage, QKeySequence
 from PySide6.QtWidgets import (
+    QPushButton,
     QComboBox,
     QDateTimeEdit,
     QDateEdit,
@@ -305,6 +306,9 @@ class JobPane(QWidget):
         self.pod_requirements_edit.setPlaceholderText(_tr('Dokumenty, format, adres / portal, termin, kara. Zachowaj pełną treść warunków.'))
         self.pod_requirements_edit.setMinimumHeight(90)
         side_l.addWidget(self.pod_requirements_edit)
+        pod_tracking = QPushButton(_tr('Dokumenty i termin POD…'))
+        pod_tracking.clicked.connect(self._open_pod_tracking)
+        side_l.addWidget(pod_tracking)
 
         client_lbl = QLabel(_tr("Update do klienta"))
         client_lbl.setObjectName("TileTitle")
@@ -871,7 +875,21 @@ class JobPane(QWidget):
         driver = db.get_driver(self._driver_id)
         return driver.display_name if driver else ""
 
-    def _save(self, checked=False, *, show_message: bool = True) -> None:
+    def _open_pod_tracking(self):
+        try:
+            if not self._save(show_message=False):
+                return
+            from markus_dispatcher.ui.pod_dialog import PodDialog
+            from markus_dispatcher.data.pod_tracking import application_pod_store
+            dialog = PodDialog(application_pod_store(), self._job_id, self)
+            try:
+                dialog.exec()
+            finally:
+                dialog.deleteLater()
+        except Exception as exc:
+            QMessageBox.warning(self, _tr('Dokumenty i termin POD'), str(exc))
+
+    def _save(self, checked=False, *, show_message: bool = True) -> bool:
         job = self.collect()
         if job.client_name and not job.local_only:
             client = db.find_or_create_client_by_name(job.client_name)
@@ -892,7 +910,7 @@ class JobPane(QWidget):
                 "MarkusDispatcher",
                 _tr("Wybierz kierowcę z floty — ewidencja jest per kierowca."),
             )
-            return
+            return False
         saved = db.save_job(job)
         self.settlement.save_draft(saved.id)
         saved = db.sync_job_to_archive(
@@ -915,6 +933,7 @@ class JobPane(QWidget):
             QMessageBox.information(
                 self, "MarkusDispatcher", _tr("Zapisano zlecenie i folder ewidencji."),
             )
+        return True
 
     def _copy_instruction(self) -> None:
         text = build_instruction(self.collect(), footer=self._footer_text)

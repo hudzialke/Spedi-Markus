@@ -38,6 +38,16 @@ class _Debt:
     label: str
 
 
+@dataclass(frozen=True, slots=True)
+class CompensationEvent:
+    kind: str
+    source_rest_ids: tuple[str, ...]
+    at: datetime
+    minutes: int
+    deadline: datetime
+    payment_rest_ids: tuple[str, ...] = ()
+
+
 def compensation_hours(duration_hours: float) -> float:
     """Hours owed after a reduced weekly rest (art. 8(6b))."""
     if duration_hours >= REGULAR_HOURS:
@@ -248,6 +258,8 @@ def analyze_scenario(
     scenario: Scenario,
     *,
     zone: DisplayZone = DEFAULT_ZONE,
+    pending_debts: list[_Debt] | None = None,
+    compensation_events: list[CompensationEvent] | None = None,
 ) -> ValidationResult:
     findings: list[Finding] = []
     hints: list[str] = []
@@ -431,6 +443,9 @@ def analyze_scenario(
                     still.append(debt)
                     continue
                 take = debt.remaining
+                if compensation_events is not None:
+                    compensation_events.append(CompensationEvent('paid', debt.source_rest_ids,
+                        period.start, round(take*60), debt.deadline, period.block_ids))
                 debt.remaining = 0.0
                 capacity -= take
                 paid_here += take
@@ -474,6 +489,10 @@ def analyze_scenario(
                     label=f"{format_duration_hm(a.debt_hours)}+{format_duration_hm(b.debt_hours)}",
                 )
             )
+            if compensation_events is not None:
+                debt = open_debts[-1]
+                compensation_events.append(CompensationEvent('created', debt.source_rest_ids,
+                    debt.source_end, round(debt.remaining*60), debt.deadline))
             continue
         if id(period) in consumed_pm:
             # Pierwszy z pary PM — dług powstanie dopiero przy drugim
@@ -491,8 +510,14 @@ def analyze_scenario(
                 label=format_duration_hm(period.debt_hours),
             )
         )
+        if compensation_events is not None:
+            debt = open_debts[-1]
+            compensation_events.append(CompensationEvent('created', debt.source_rest_ids,
+                debt.source_end, round(debt.remaining*60), debt.deadline))
 
     remaining = open_debts
+    if pending_debts is not None:
+        pending_debts.extend(remaining)
 
     # UI: zielony pasek pokazuje tylko rekompensatę faktycznie zaliczoną
     # przez analizator, a nie każdą nadwyżkę ponad 45h.

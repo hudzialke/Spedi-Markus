@@ -46,4 +46,14 @@ class DriverScheduleTest {
         assertEquals("W trasie 6 dni 2 h", active.tripLabel(Instant.parse("2026-10-07T12:00:00Z")))
         assertEquals("active-rest", active.events().minBy { it.at }.key)
     }
+    @Test fun homeReturnComesFromDesktopAndRemainsSeparateFromThePlan() {
+        val driver = DriverSchedule.fromMap("driver", mapOf(
+            "home_return_by" to "2026-10-31T15:33:00Z",
+            "home_return_reason" to "Synthetic explanation",
+            "planned_return_at" to "2026-11-01T15:33:00Z"))
+        assertEquals(Instant.parse("2026-10-31T15:33:00Z"), driver.homeReturnBy)
+        assertEquals("Synthetic explanation", driver.homeReturnReason)
+        assertEquals(2, driver.events().size)
+        assertEquals("driver-home", driver.events().minBy { it.at }.key)
+    }
 }

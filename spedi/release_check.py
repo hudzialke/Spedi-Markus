@@ -190,6 +190,54 @@ def run(report_path: str) -> int:
             generated = export_month_pdf(month, root/'month.pdf')
             assert generated.read_bytes().startswith(b'%PDF-')
             report['checks'].append('lazy-pdf-report-generators')
+            from brudnopis_ot.core import weekly_rules
+            from spedi import mobile_rules
+            assert mobile_rules.analyze_scenario is weekly_rules.analyze_scenario
+            from spedi.backups import BackupManager
+            import sqlite3
+            tools_root = root/'data-tools'
+            tools_root.mkdir()
+            with sqlite3.connect(tools_root/'synthetic.sqlite') as connection:
+                connection.execute('CREATE TABLE test(value TEXT)')
+                connection.execute("INSERT INTO test VALUES ('SYNTHETIC')")
+            manager = BackupManager({'spedi': tools_root}, tools_root/'backups')
+            archive = manager.create(documents=False)
+            manager.inspect(archive, verify=True)
+            manager.schedule_restore(archive)
+            assert manager.apply_pending() == 'restored'
+            from spedi.backup_ui import BackupDialog
+            from spedi.calculation_ui import CalculationDialog
+            from spedi.update_ui import UpdateDialog
+            from spedi.updates import UpdateService, PROJECT_URL
+            from spedi.daily_ui import DailyOverviewDialog
+            from spedi.daily_overview import ActionItem
+            service = UpdateService(tools_root/'updates.json', fetch=lambda: {
+                'tag_name': 'v99.0.0', 'html_url': PROJECT_URL+'/releases/tag/v99.0.0', 'body': 'SYNTHETIC',
+                'assets': [{'name': 'Spedi-Setup.exe', 'browser_download_url': PROJECT_URL+'/releases/download/v99.0.0/Spedi-Setup.exe'}]})
+            from markus_dispatcher.data import db
+            from markus_dispatcher.core.models import JobData
+            from markus_dispatcher.data.pod_tracking import PodStore
+            from markus_dispatcher.ui.pod_dialog import PodDialog
+            job = db.save_job(JobData(ref_numbers='SYNTHETIC-CHECK', pod_requirements='SYNTHETIC CMR'))
+            pod = PodStore(db.config.DB_PATH, db.config.ARCHIVE_ROOT)
+            dialogs = [BackupDialog(manager), CalculationDialog('SYNTHETIC', arrival),
+                       UpdateDialog(service.check(), service, manager), PodDialog(pod, job.id)]
+            daily = DailyOverviewDialog('unused', 'unused', 'unused', loader=lambda *args, **kwargs:
+                ((ActionItem('test', 'drivers', 'SYNTHETIC', 'SYNTHETIC', 'SYNTHETIC'),), ()))
+            deadline = time.monotonic()+10
+            while not daily._loaded or daily._worker is not None:
+                assert time.monotonic() < deadline
+                app.processEvents()
+                QThread.msleep(5)
+            assert daily.models['drivers'].rowCount() == 1
+            dialogs.append(daily)
+            for dialog in dialogs:
+                dialog.reject()
+                dialog.deleteLater()
+            app.processEvents()
+            import pypdf
+            assert pypdf.PdfWriter
+            report['checks'].append('shared-engine-backups-updates-inspector-daily-pod')
             report['ok'] = True
     except Exception as error:
         # Exception text can contain paths; keep the report free of user data.

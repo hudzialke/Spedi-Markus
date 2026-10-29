@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spedi"
-version = "0.2.3"
+version = "0.3.0"
 description = "Spedi — Brudnopis OT, Ewidentor i Markus Dispatcher w jednym oknie."
 readme = "README.md"
 license = "MIT"

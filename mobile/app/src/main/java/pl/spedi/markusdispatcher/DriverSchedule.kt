@@ -18,9 +18,11 @@ data class DriverSchedule(
     val compensations: List<Compensation>, val findings: List<String>, val lastActivity: Instant?,
     val syncedAt: Instant?, val conflict: Boolean, val pendingPlan: Map<String, Any?>?,
     val localEdited: Boolean = false, val sourceRestStartBy: Instant? = restStartBy,
+    val homeReturnBy: Instant? = null, val homeReturnReason: String = "",
 ) {
     fun events(): List<DriverEvent> = listOfNotNull(
         plannedReturn?.let { DriverEvent("$id-return", id, name, "Powrót planowany", it) },
+        homeReturnBy?.let { DriverEvent("$id-home", id, name, "Powrót do domu / bazy · najpóźniej", it) },
         week4Start?.let { DriverEvent("$id-week4", id, name, "Start tygodnia 4", it) },
         restStartBy?.let { DriverEvent("$id-rest", id, name, "Odpoczynek tygodniowy z rekompensatami", it) },
     ) + compensations.mapNotNull { c ->
@@ -54,7 +56,8 @@ data class DriverSchedule(
             return DriverSchedule(id, d["display_name"]?.toString().orEmpty(), d["revision"]?.toString().orEmpty(),
                 date("week1_monday"), date("week4_monday"), instant("week4_start_at"), instant("departure_at"),
                 instant("anchor_at"), instant("planned_return_at"), instant("rest_start_by"), instant("next_weekly_rest_start_by"),
-                comps, findings, instant("last_activity_at"), timestamp?.toDate()?.toInstant(), d["sync_conflict"] == true, pending)
+                comps, findings, instant("last_activity_at"), timestamp?.toDate()?.toInstant(), d["sync_conflict"] == true, pending,
+                homeReturnBy = instant("home_return_by"), homeReturnReason = d["home_return_reason"]?.toString().orEmpty())
         }
     }
 }

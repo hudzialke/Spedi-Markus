@@ -131,19 +131,22 @@ class WeeklyWatchDialog(QDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.itemChanged.connect(self._checked)
         self.table.itemSelectionChanged.connect(self._details)
-        self.table.cellDoubleClicked.connect(lambda *_: self._options())
+        self.table.cellDoubleClicked.connect(lambda row, col: self._show_calculation() if col in (2, 3, 8, 9) else self._options())
         layout.addWidget(self.table, 1)
         self.count = QLabel()
         layout.addWidget(self.count)
         progress_bar = QHBoxLayout()
         self.progress = QLabel()
         progress_bar.addWidget(self.progress, 1)
+        calculation = QPushButton(_tr('Pokaż wyliczenie…'))
+        calculation.clicked.connect(self._show_calculation)
+        progress_bar.addWidget(calculation)
         self.cancel_button = QPushButton(_tr('Anuluj obliczenia'))
         self.cancel_button.clicked.connect(self._cancel_calculation)
         self.cancel_button.setEnabled(False)
         progress_bar.addWidget(self.cancel_button)
         layout.addLayout(progress_bar)
-        self.detail = QLabel(_tr("Zaznacz wiersz, aby zobaczyć uzasadnienie. Dwuklik otwiera warunki skrócenia."))
+        self.detail = QLabel(_tr('Dwuklik terminu otwiera wyliczenie; pozostałych pól — warunki skrócenia.'))
         self.detail.setWordWrap(True)
         self.detail.setMinimumHeight(48)
         layout.addWidget(self.detail)
@@ -279,6 +282,18 @@ class WeeklyWatchDialog(QDialog):
         self._loading = False
         self.progress.setText(_tr('Obliczono widocznych kierowców: ') + str(len(self.results)))
         self._details()
+
+    def _show_calculation(self):
+        key = self._current_key()
+        if key not in self.results:
+            QMessageBox.information(self, _tr('Wyliczenie terminów'), _tr('Zaznacz obliczony profil kierowcy.'))
+            return
+        from spedi.calculation_ui import CalculationDialog
+        dialog = CalculationDialog(self.profiles[key].profile_label, self.results[key], self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _row_failed(self, generation, key, message):
         if generation != self._generation:

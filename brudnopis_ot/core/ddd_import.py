@@ -156,6 +156,13 @@ def import_files(store, paths, *, loader=load_ddd_profiles, cancelled=None, prog
     _schema(store)
     report = ImportReport()
     paths = list(paths)
+    if paths:
+        from spedi.backups import before_profile_import
+        try:
+            before_profile_import(store, cancelled=cancelled or (lambda: False))
+        except InterruptedError:
+            report.cancelled = True
+            return report
     for index, raw in enumerate(paths):
         if cancelled and cancelled():
             report.cancelled = True

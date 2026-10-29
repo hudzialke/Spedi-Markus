@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 import shutil
 import sqlite3
-from datetime import date, datetime
+import hashlib
+import zlib
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from brudnopis_ot.core.ddd_file_loader import (
@@ -179,6 +181,14 @@ class DddProfileStore:
                     confirmed_at TEXT NOT NULL,
                     PRIMARY KEY(profile_key, start, activity)
                 );
+                CREATE TABLE IF NOT EXISTS profile_edit_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_key TEXT NOT NULL REFERENCES profiles(profile_key) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL, reason TEXT NOT NULL, summary TEXT NOT NULL,
+                    payload BLOB NOT NULL, payload_hash TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_profile_edit_history
+                    ON profile_edit_history(profile_key, id DESC);
                 """
             )
 
@@ -200,15 +210,25 @@ class DddProfileStore:
             source.week_start = cycle
         return source
 
-    def save_ddd_scenario(self, profile_key: str, scenario: Scenario) -> None:
-        from brudnopis_ot.core.profile_scenario import original_scenario
+    def save_ddd_scenario(self, profile_key: str, scenario: Scenario, *, reason='edit') -> None:
+        from brudnopis_ot.core.profile_scenario import original_scenario, exact_scenario, rebase_scenario
         from brudnopis_ot.core.serialize import scenario_to_dict
+        from brudnopis_ot.core.models import copy_scenario
         profile = self.get(profile_key)
         if profile is None or profile.source_kind == 'template':
             raise ValueError('Wybierz profil DDD.')
         with self._connect() as conn:
+            baseline = self._with_confirmed_activity_ends(profile, original_scenario(profile))
+            row = conn.execute('SELECT baseline_json, scenario_json FROM ddd_scenario_edits WHERE profile_key=?',
+                               (profile_key,)).fetchone()
+            before = (rebase_scenario(exact_scenario(json.loads(row['baseline_json'])),
+                                     exact_scenario(json.loads(row['scenario_json'])), baseline)
+                      if row else copy_scenario(baseline))
+            if not row and (cycle := self.get_cycle_start(profile_key)):
+                before.week_start = cycle
+            self._remember_revision(conn, profile_key, before, scenario, baseline, reason)
             conn.execute('INSERT OR REPLACE INTO ddd_scenario_edits VALUES (?, ?, ?)',
-                         (profile_key, json.dumps(scenario_to_dict(self._with_confirmed_activity_ends(profile, original_scenario(profile))), ensure_ascii=False),
+                         (profile_key, json.dumps(scenario_to_dict(baseline), ensure_ascii=False),
                           json.dumps(scenario_to_dict(scenario), ensure_ascii=False)))
             self.set_cycle_start(profile_key, scenario.week_start)
 
@@ -645,13 +665,14 @@ class DddProfileStore:
             anchor_block_id=data.get("anchor_block_id"),
         )
 
-    def save_template_scenario(self, profile_key: str, scenario: Scenario) -> None:
+    def save_template_scenario(self, profile_key: str, scenario: Scenario, *, reason='edit') -> None:
         from brudnopis_ot.core.serialize import scenario_to_dict
 
         name = scenario.title.strip()
         if not name:
             raise ValueError("Podaj nazwę ręcznego profilu")
         with self._connect() as conn:
+            self._remember_revision(conn, profile_key, self.load_template_scenario(profile_key), scenario, None, reason)
             cursor = conn.execute(
                 "UPDATE profiles SET scenario_json = ?, cycle_start = ?, title = ?, "
                 "driver_name = ?, updated_at = ? WHERE profile_key = ? AND source_kind = 'template'",
@@ -660,6 +681,55 @@ class DddProfileStore:
             )
             if cursor.rowcount != 1:
                 raise ValueError("Nie znaleziono ręcznego profilu")
+
+    def _remember_revision(self, conn, key, before, after, baseline, reason):
+        from brudnopis_ot.core.serialize import scenario_to_dict
+        previous, current = scenario_to_dict(before), scenario_to_dict(after)
+        if previous == current:
+            return
+        left = {item['id']: item for item in previous['blocks']}
+        right = {item['id']: item for item in current['blocks']}
+        summary = {'added': len(right.keys()-left.keys()), 'removed': len(left.keys()-right.keys()),
+                   'changed': sum(left[key] != right[key] for key in left.keys() & right.keys()),
+                   'axis_changed': previous['week_start'] != current['week_start'],
+                   'title_changed': previous['title'] != current['title']}
+        data = {'scenario': previous, 'baseline': scenario_to_dict(baseline) if baseline else None}
+        payload = zlib.compress(json.dumps(data, ensure_ascii=False).encode('utf-8'), level=1)
+        conn.execute('INSERT INTO profile_edit_history(profile_key,created_at,reason,summary,payload,payload_hash) '
+                     'VALUES (?,?,?,?,?,?)', (key, datetime.now(timezone.utc).isoformat(), reason,
+                     json.dumps(summary), payload, hashlib.sha256(payload).hexdigest()))
+        conn.execute('DELETE FROM profile_edit_history WHERE profile_key=? AND id NOT IN '
+                     '(SELECT id FROM profile_edit_history WHERE profile_key=? ORDER BY id DESC LIMIT 25)', (key, key))
+
+    def list_edit_history(self, profile_key):
+        with self._connect() as conn:
+            rows = conn.execute('SELECT id,created_at,reason,summary,length(payload) AS bytes '
+                                'FROM profile_edit_history WHERE profile_key=? ORDER BY id DESC', (profile_key,)).fetchall()
+        return [{**dict(row), 'summary': json.loads(row['summary'])} for row in rows]
+
+    def restore_edit_revision(self, profile_key, revision_id):
+        from brudnopis_ot.core.profile_scenario import exact_scenario, original_scenario, rebase_scenario
+        with self._connect() as conn:
+            row = conn.execute('SELECT payload,payload_hash FROM profile_edit_history WHERE profile_key=? AND id=?',
+                               (profile_key, revision_id)).fetchone()
+            if row is None or hashlib.sha256(row['payload']).hexdigest() != row['payload_hash']:
+                raise ValueError('Wersja profilu nie istnieje albo jest uszkodzona.')
+            decoder = zlib.decompressobj()
+            raw = decoder.decompress(row['payload'], 256*1024**2+1)
+            if len(raw) > 256*1024**2 or not decoder.eof:
+                raise ValueError('Nieprawidłowy rozmiar historii profilu.')
+            data = json.loads(raw)
+            scenario = exact_scenario(data['scenario'])
+            profile = self.get(profile_key)
+            if profile is None:
+                raise ValueError('Profil już nie istnieje.')
+            if profile.source_kind == 'template':
+                self.save_template_scenario(profile_key, scenario, reason='restore')
+            else:
+                baseline = self._with_confirmed_activity_ends(profile, original_scenario(profile))
+                scenario = rebase_scenario(exact_scenario(data['baseline']), scenario, baseline)
+                self.save_ddd_scenario(profile_key, scenario, reason='restore')
+            return self.get(profile_key)
 
     def delete_template(self, profile_key: str) -> None:
         with self._connect() as conn:

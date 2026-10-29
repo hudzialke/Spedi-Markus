@@ -598,9 +598,13 @@ class MainWindow(QMainWindow):
         active_key = self._ddd_profile.profile_key if self._ddd_profile else None
         store_path = self._ddd_store.path
         store_type = type(self._ddd_store)
-        report = run_background(self, _tr('Importowanie plików DDD…'),
-            lambda task: import_files(store_type(store_path), paths,
-                cancelled=task.isInterruptionRequested, progress=task.progress.emit), cancellable=True)
+        try:
+            report = run_background(self, _tr('Importowanie plików DDD…'),
+                lambda task: import_files(store_type(store_path), paths,
+                    cancelled=task.isInterruptionRequested, progress=task.progress.emit), cancellable=True)
+        except Exception as exc:
+            QMessageBox.warning(self, _tr('Nie wykonano importu'), str(exc))
+            return
         self._ddd_session = self._ddd_store.list_profile_summaries()
         self._rebuild_ddd_combo()
         QMessageBox.information(self, _tr("Podsumowanie importu DDD"), report.text())

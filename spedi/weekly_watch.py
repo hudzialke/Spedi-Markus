@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from brudnopis_ot.core.models import ActivityKind, Scenario, WeeklyRestPeriod, copy_scenario
 from brudnopis_ot.core.serialize import scenario_to_dict
-from spedi.mobile_rules import analyze_scenario, build_weekly_rests, detect_mobility_pairs
+from brudnopis_ot.core.weekly_rules import analyze_scenario, build_weekly_rests, detect_mobility_pairs, CompensationEvent
 
 WARSAW = ZoneInfo("Europe/Warsaw")
 COUNTRIES = frozenset("AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW".split())
@@ -79,6 +79,15 @@ class WatchStore:
 
 
 @dataclass(frozen=True)
+class PendingCompensation:
+    source_rest_ids: tuple[str, ...]
+    remaining_minutes: int
+    deadline: datetime
+    latest_start: datetime | None
+    mobility_pair: bool
+
+
+@dataclass(frozen=True)
 class WatchResult:
     start_by: datetime | None
     weekly_start_by: datetime | None
@@ -91,6 +100,10 @@ class WatchResult:
     return_compensation_minutes: int = 0
     return_rest_minutes: int = 0
     return_reason: str = ""
+    rest_history: tuple[WeeklyRestPeriod, ...] = ()
+    compensation_events: tuple[CompensationEvent, ...] = ()
+    compensation_assignments: tuple = ()
+    pending_compensations: tuple[PendingCompensation, ...] = ()
 
 
 def load_scenario(store, profile) -> Scenario:
@@ -268,7 +281,7 @@ def _compensation_assignments(weekly, week1, regular_limit):
         yield {}
 
 
-def _home_return(scenario, weekly, debt_scenario, pending, options):
+def _home_return(scenario, weekly, debt_scenario, pending, options, assignment_details=None):
     """Arrival at home/base, with a feasible uninterrupted compensation/45h plan.
 
     Week 1 is the user-declared departure after a home/base regular rest. An OT
@@ -348,8 +361,16 @@ def _home_return(scenario, weekly, debt_scenario, pending, options):
                     elapsed += 45 * 60
                 elapsed += minutes
                 latest = min(latest, due - timedelta(minutes=elapsed))
-            plans.append((latest, prefix, singles, shifted))
-    arrival, prefix, singles, shifted = max(plans, key=lambda p: p[0])
+            plans.append((latest, prefix, singles, shifted, assigned))
+    arrival, prefix, singles, shifted, assigned = max(plans, key=lambda p: p[0])
+    if assignment_details is not None:
+        for debt in pending:
+            if debt.from_pm_pair:
+                continue
+            source = sources.get(debt.source_rest_ids)
+            if source is not None:
+                week = assigned.get(source.block_ids, monday(source.start))
+                assignment_details.append((source.block_ids, week, midnight(week+timedelta(weeks=4))))
     compensation = pair_minutes + sum(minutes for _, minutes in singles)
     if pair:
         reason = "Powrót przed regularnym OT po dwóch kolejnych skróconych: obie rekompensaty bez przerwy przed 45 h."
@@ -406,7 +427,8 @@ def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> Wat
         if block.kind == ActivityKind.REST:
             block.started_abroad = True
     pending = []
-    analyzed = analyze_scenario(debt_scenario, pending_debts=pending)
+    events = []
+    analyzed = analyze_scenario(debt_scenario, pending_debts=pending, compensation_events=events)
     # A compensation actually taken late is a historical violation, not another
     # future demand for the same 42h. Allocate capacity only once per later rest.
     late_paid = False
@@ -417,14 +439,28 @@ def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> Wat
             if debt.from_pm_pair and period.start >= debt.source_end and capacity >= debt.remaining:
                 capacity -= debt.remaining
                 pending.remove(debt)
+                events.append(CompensationEvent('paid_late', debt.source_rest_ids, period.start,
+                    round(debt.remaining*60), debt.deadline, period.block_ids))
                 late_paid = True
                 allocations[period.block_ids] += debt.remaining
     weekly = [replace(r, compensation_hours=allocations.get(r.block_ids, 0)) for r in weekly
               if r.classification == "regular" or r.duration_hours - allocations.get(r.block_ids, 0) >= 24]
-    home = _home_return(scenario, weekly, debt_scenario, pending, options)
+    assignments = []
+    home = _home_return(scenario, weekly, debt_scenario, pending, options, assignments)
+    trace_rests = {rest.block_ids: rest for rest in weekly}
+    payment_keys = {event.payment_rest_ids for event in events if event.payment_rest_ids}
+    for rest in analyzed.weekly_rests:
+        if rest.block_ids in payment_keys:
+            trace_rests[rest.block_ids] = replace(rest, compensation_hours=allocations.get(rest.block_ids, rest.compensation_hours))
+    trace_rests = tuple(sorted(trace_rests.values(), key=lambda rest: rest.start))
+    assigned_due = {ids: due for ids, week, due in assignments}
+    obligations = tuple(PendingCompensation(debt.source_rest_ids, round(debt.remaining*60),
+        assigned_due.get(debt.source_rest_ids, debt.deadline), debt.latest_start, debt.from_pm_pair) for debt in pending)
     def result(*args):
         return WatchResult(*args, return_by=home[0], return_compensation_minutes=home[1],
-                           return_rest_minutes=home[2], return_reason=home[3])
+                           return_rest_minutes=home[2], return_reason=home[3],
+                           rest_history=trace_rests, compensation_events=tuple(events),
+                           compensation_assignments=tuple(assignments), pending_compensations=obligations)
     anchor = full.get_block(full.anchor_block_id) if full.anchor_block_id else None
     reference = weekly[-1].end if weekly else (anchor.start if anchor else None)
     if reference is None:
