@@ -112,6 +112,29 @@ def test_export_does_not_modify_scenario_and_revision_is_stable():
     assert schedule(sc)["revision"] != schedule(sc, planned_return_at="2026-10-08T12:00:00Z")["revision"]
 
 
+def test_export_profile_list_uses_metadata_instead_of_loading_all_raw_history(tmp_path, monkeypatch):
+    store = DddProfileStore(tmp_path/'profiles.sqlite')
+    profile = store.create_template('Synthetic', date(2026, 10, 5))
+    def forbidden():
+        pytest.fail('Export should load each scenario once, not materialize full profile lists')
+    monkeypatch.setattr(store, 'list_profiles', forbidden)
+    documents = build_driver_documents(store)
+    assert documents[driver_document_id(profile.profile_key)]['display_name'] == 'Synthetic'
+
+
+def test_lightweight_phone_publication_keeps_full_revision_without_retaining_timelines(tmp_path):
+    from spedi.mobile_sync import published_document
+    store = DddProfileStore(tmp_path/'profiles.sqlite')
+    profile = store.create_template('Synthetic', date(2026, 9, 21))
+    store.save_template_scenario(profile.profile_key, pair_scenario())
+    full = build_driver_documents(store)
+    lightweight = build_driver_documents(store, include_scenario=False)
+    key = driver_document_id(profile.profile_key)
+    assert 'scenario' in full[key] and 'scenario' not in lightweight[key]
+    assert lightweight[key]['revision'] == full[key]['revision']
+    assert published_document(lightweight[key]) == published_document(full[key])
+
+
 def test_snapshot_engine_has_no_rule_changes_and_detects_upstream_drift():
     expected = inspect.getsource(weekly_rules).replace(
         "    zone: DisplayZone = DEFAULT_ZONE,",

@@ -283,7 +283,7 @@ def test_multi_picker_summary_keeps_template(tmp_path, monkeypatch):
     reports=[]
     monkeypatch.setattr(QMessageBox, 'information', lambda *args: reports.append(args[2]))
     original = ddd_import.import_files
-    monkeypatch.setattr(ddd_import, 'import_files', lambda st, pp: original(st, pp, loader=lambda p: [profile(CARD if p.read_bytes()==b'one' else OTHER)]))
+    monkeypatch.setattr(ddd_import, 'import_files', lambda st, pp, **kwargs: original(st, pp, loader=lambda p: [profile(CARD if p.read_bytes()==b'one' else OTHER)], **kwargs))
     win = main_window.MainWindow()
     win._apply_ddd_profile(template)
     win._add_ddd_file()

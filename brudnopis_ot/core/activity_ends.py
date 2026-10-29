@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 from brudnopis_ot.core.hudonizator_reader import RawSegment
 
 
-def confirmed_segments(segments, confirmations, open_activity=None):
+def confirmed_segments(segments, confirmations, open_activity=None, *, range_start=None, range_end=None):
+    if not confirmations:
+        return []
     bounds = [(datetime.combine(s.day, datetime.min.time()) + timedelta(minutes=s.start_minute),
                datetime.combine(s.day, datetime.min.time()) + timedelta(minutes=s.end_minute)) for s in segments]
     additions = []
@@ -16,7 +18,9 @@ def confirmed_segments(segments, confirmations, open_activity=None):
         if open_activity and open_activity.start > start:
             boundaries.append(open_activity.start)
         end = min([end, *boundaries])
-        current = start
+        if range_end is not None:
+            end = min(end, range_end)
+        current = max(start, range_start) if range_start is not None else start
         while current < end:
             midnight = datetime.combine(current.date(), datetime.min.time())
             piece_end = min(end, midnight + timedelta(days=1))

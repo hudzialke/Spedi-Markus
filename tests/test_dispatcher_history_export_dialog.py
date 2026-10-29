@@ -66,6 +66,7 @@ def test_export_history_dialog_can_open_export_folder(tmp_path: Path, monkeypatc
     FakeMessageBox.shown.clear()
 
     monkeypatch.setattr(main_window, "export_history", lambda: result)
+    monkeypatch.setattr(main_window, "run_background", lambda parent, label, operation: operation(None))
     monkeypatch.setattr(main_window, "QMessageBox", FakeMessageBox)
     monkeypatch.setattr(
         main_window,

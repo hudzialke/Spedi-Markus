@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from ewidentor.core.brudnopis_import import BorderCrossingRow, PlaceRow, RawSegment
+from brudnopis_ot.core.interval_index import IntervalIndex
 
 # Aktywności liczone pod MiLo (jazda + praca + dyspozycja/dyżur).
 MILO_ACTIVITIES = frozenset({"drive", "work", "availability", "other_work"})
@@ -96,6 +97,7 @@ def _minutes_from_intervals(
         return []
     totals: dict[tuple[date, str], int] = {}
     first_seen: dict[tuple[date, str], datetime] = {}
+    interval_index = IntervalIndex(intervals, lambda item: item[:2])
     for seg in segments:
         act = (seg.activity or "").strip().lower()
         if act not in MILO_ACTIVITIES:
@@ -103,7 +105,7 @@ def _minutes_from_intervals(
         s0, s1 = _seg_abs_range(seg)
         if s1 <= s0:
             continue
-        for c0, c1, country in intervals:
+        for c0, c1, country in interval_index.overlapping(s0, s1, original_order=True):
             mins = _overlap_minutes(s0, s1, c0, c1)
             if mins <= 0:
                 continue

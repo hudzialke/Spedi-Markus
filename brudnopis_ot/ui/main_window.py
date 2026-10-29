@@ -3,7 +3,6 @@ from __future__ import annotations
 from spedi.i18n import tr as _tr
 
 import sys
-from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -39,7 +38,7 @@ from brudnopis_ot.core.ddd_file_loader import (
     load_ddd_batch,
     merge_batch_into_session,
 )
-from brudnopis_ot.core.ddd_store import DddProfileStore
+from brudnopis_ot.core.ddd_store import DddProfileStore, DddProfileSummary
 from brudnopis_ot.core.display_tz import (
     DEFAULT_ZONE,
     SETTINGS_APP,
@@ -48,9 +47,8 @@ from brudnopis_ot.core.display_tz import (
     normalize_zone,
     zone_label,
 )
-from brudnopis_ot.core.models import ActivityKind, Block, Scenario
+from brudnopis_ot.core.models import ActivityKind, Block, Scenario, copy_scenario
 from brudnopis_ot.core.paths import scenarios_dir, safe_filename_part
-from brudnopis_ot.core.report_pdf import write_profile_report
 from brudnopis_ot.core.serialize import load_scenario, save_scenario
 from brudnopis_ot.core.validator import validate_scenario
 from brudnopis_ot.ui.block_editor import BlockEditorDialog
@@ -62,7 +60,6 @@ from brudnopis_ot.ui.findings_panel import FindingsPanel
 from brudnopis_ot.ui.legend_widget import LegendWidget
 from brudnopis_ot.ui.week_grid import WeekGridWidget
 from brudnopis_ot.core.paths import scenarios_dir, safe_filename_part
-from brudnopis_ot.core.report_pdf import write_profile_report
 from brudnopis_ot.core.serialize import load_scenario, save_scenario
 from brudnopis_ot.core.validator import validate_scenario
 from brudnopis_ot.ui.block_editor import BlockEditorDialog
@@ -114,7 +111,7 @@ class MainWindow(QMainWindow):
         self._ddd_view_blocks: dict[str, Block] = {}
         self._ddd_store = DddProfileStore()
         try:
-            self._ddd_session: list[DddLoadResult] = self._ddd_store.list_profiles()
+            self._ddd_session: list[DddProfileSummary | DddLoadResult] = self._ddd_store.list_profile_summaries()
         except Exception:  # noqa: BLE001
             self._ddd_session = []
         self._ddd_combo: QComboBox | None = None
@@ -456,17 +453,6 @@ class MainWindow(QMainWindow):
     ) -> None:
         from brudnopis_ot.core.ddd_import import recover_open_activity
         loaded = recover_open_activity(self._ddd_store, loaded.profile_key) or loaded
-        self._ddd_profile = loaded
-        if not any(p.profile_key == loaded.profile_key for p in self._ddd_session):
-            self._ddd_session = sorted(
-                [*self._ddd_session, loaded],
-                key=lambda p: (p.source_kind, p.profile_label.casefold()),
-            )
-        else:
-            self._ddd_session = [
-                loaded if p.profile_key == loaded.profile_key else p
-                for p in self._ddd_session
-            ]
         stored = self._ddd_store.get_cycle_start(loaded.profile_key)
         suggested = stored or self._default_cycle_start(loaded)
         if ask_cycle:
@@ -477,22 +463,43 @@ class MainWindow(QMainWindow):
                 latest=loaded.date_to,
             )
             if dlg.exec() == dlg.DialogCode.Accepted:
-                self._cycle_start = dlg.selected_monday()
+                cycle_start = dlg.selected_monday()
             else:
-                self._cycle_start = suggested
-            self._ddd_store.set_cycle_start(loaded.profile_key, self._cycle_start)
+                cycle_start = suggested
+            dlg.deleteLater()
         else:
-            self._cycle_start = suggested
+            cycle_start = suggested
         if loaded.source_kind == "template":
-            self._template_source = self._ddd_store.load_template_scenario(loaded.profile_key)
-            self._project_template()
-            self._cycle_start = self._scenario.week_start
+            source = self._ddd_store.load_template_scenario(loaded.profile_key)
         else:
-            self._ddd_source = self._ddd_store.load_ddd_scenario(loaded.profile_key, original=not self._ddd_modified)
+            if len(loaded.segments) > 5000:
+                from spedi.background import run_background
+                store_path, store_type = self._ddd_store.path, type(self._ddd_store)
+                key, original = loaded.profile_key, not self._ddd_modified
+                source = run_background(self, _tr('Wczytywanie historii kierowcy…'),
+                    lambda task: store_type(store_path).load_ddd_scenario(key, original=original))
+            else:
+                source = self._ddd_store.load_ddd_scenario(loaded.profile_key, original=not self._ddd_modified)
             if ask_cycle:
-                self._ddd_source.week_start = self._cycle_start
-            self._project_ddd()
-            self._cycle_start = self._scenario.week_start
+                source.week_start = cycle_start
+        scenario = copy_scenario(source)
+        scenario.set_axis_monday(scenario.week_start)
+        view_blocks = {b.id: replace(b) for b in scenario.blocks}
+        if ask_cycle:
+            self._ddd_store.set_cycle_start(loaded.profile_key, cycle_start)
+        # Commit the selected identity together with its successfully loaded timeline.
+        # An I/O failure must never leave the previous driver's edits under a new key.
+        self._ddd_profile = loaded
+        session = [p for p in self._ddd_session if p.profile_key != loaded.profile_key]
+        self._ddd_session = sorted([*session, loaded], key=lambda p: (p.source_kind, p.profile_label.casefold()))
+        self._scenario = scenario
+        self._cycle_start = scenario.week_start
+        if loaded.source_kind == 'template':
+            self._template_source = source
+            self._template_view_blocks = view_blocks
+        else:
+            self._ddd_source = source
+            self._ddd_view_blocks = view_blocks
         self._path = None
         self._dirty = False
         self._rebuild_ddd_combo()
@@ -587,9 +594,14 @@ class MainWindow(QMainWindow):
         if not paths:
             return
         from brudnopis_ot.core.ddd_import import import_files
+        from spedi.background import run_background
         active_key = self._ddd_profile.profile_key if self._ddd_profile else None
-        report = import_files(self._ddd_store, paths)
-        self._ddd_session = self._ddd_store.list_profiles()
+        store_path = self._ddd_store.path
+        store_type = type(self._ddd_store)
+        report = run_background(self, _tr('Importowanie plików DDD…'),
+            lambda task: import_files(store_type(store_path), paths,
+                cancelled=task.isInterruptionRequested, progress=task.progress.emit), cancellable=True)
+        self._ddd_session = self._ddd_store.list_profile_summaries()
         self._rebuild_ddd_combo()
         QMessageBox.information(self, _tr("Podsumowanie importu DDD"), report.text())
         # Preserve edited scenarios and the selected Template Driver.
@@ -610,7 +622,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, _tr("Archiwum DDD"), _tr("Scenariusz ma ręczne korekty. Zapisz je do osobnego pliku przed odświeżeniem. Dane pozostają bez zmian."))
             return
         try:
-            saved = refresh_profile(self._ddd_store, self._ddd_profile.profile_key)
+            from spedi.background import run_background
+            store_path, key = self._ddd_store.path, self._ddd_profile.profile_key
+            store_type = type(self._ddd_store)
+            saved = run_background(self, _tr('Przeliczanie archiwum DDD…'),
+                lambda task: refresh_profile(store_type(store_path), key))
         except Exception as exc:
             QMessageBox.warning(self, _tr("Nie przeliczono profilu"), str(exc))
             return
@@ -661,7 +677,13 @@ class MainWindow(QMainWindow):
                 self._ddd_combo.setCurrentIndex(0)
             self._updating_ddd_combo = False
             return
-        self._apply_ddd_profile(profile)
+        try:
+            loaded = self._ddd_store.get(key)
+            if loaded is not None:
+                self._apply_ddd_profile(loaded)
+        except Exception as exc:
+            self._rebuild_ddd_combo()
+            QMessageBox.warning(self, _tr('Nie można wczytać profilu'), str(exc))
 
     def _is_template(self) -> bool:
         return self._ddd_profile is not None and self._ddd_profile.source_kind == "template"
@@ -670,9 +692,9 @@ class MainWindow(QMainWindow):
         return self._ddd_profile is not None and not self._is_template() and not self._ddd_modified
 
     def _project_ddd(self) -> None:
-        self._scenario = deepcopy(self._ddd_source)
+        self._scenario = copy_scenario(self._ddd_source)
         self._scenario.set_axis_monday(self._scenario.week_start)
-        self._ddd_view_blocks = {b.id: deepcopy(b) for b in self._scenario.blocks}
+        self._ddd_view_blocks = {b.id: replace(b) for b in self._scenario.blocks}
 
     def _on_ddd_view_changed(self, index: int) -> None:
         if self._dirty and not self._is_template() and self._ddd_profile:
@@ -681,9 +703,17 @@ class MainWindow(QMainWindow):
                 self._ddd_view.setCurrentIndex(0 if self._ddd_modified else 1)
                 self._ddd_view.blockSignals(False)
                 return
+        previous = self._ddd_modified
         self._ddd_modified = index == 0
         if self._ddd_profile and not self._is_template():
-            self._apply_ddd_profile(self._ddd_store.get(self._ddd_profile.profile_key))
+            try:
+                self._apply_ddd_profile(self._ddd_store.get(self._ddd_profile.profile_key))
+            except Exception as exc:
+                self._ddd_modified = previous
+                self._ddd_view.blockSignals(True)
+                self._ddd_view.setCurrentIndex(0 if previous else 1)
+                self._ddd_view.blockSignals(False)
+                QMessageBox.warning(self, _tr('Nie można wczytać profilu'), str(exc))
 
     def _persist_ddd(self) -> bool:
         from brudnopis_ot.core.profile_scenario import update_full_scenario
@@ -691,9 +721,15 @@ class MainWindow(QMainWindow):
             return True
         try:
             full = update_full_scenario(self._ddd_source, self._ddd_view_blocks, self._scenario)
-            self._ddd_store.save_ddd_scenario(self._ddd_profile.profile_key, full)
-            self._ddd_source = deepcopy(full)
-            self._ddd_view_blocks = {b.id: deepcopy(b) for b in self._scenario.blocks}
+            if len(full.blocks) > 5000:
+                from spedi.background import run_background
+                store_path, store_type, key = self._ddd_store.path, type(self._ddd_store), self._ddd_profile.profile_key
+                run_background(self, _tr('Zapisywanie zmian…'),
+                    lambda task: store_type(store_path).save_ddd_scenario(key, full))
+            else:
+                self._ddd_store.save_ddd_scenario(self._ddd_profile.profile_key, full)
+            self._ddd_source = copy_scenario(full)
+            self._ddd_view_blocks = {b.id: replace(b) for b in self._scenario.blocks}
             self._cycle_start = self._scenario.week_start
             self._sync_cycle_edit()
             self._dirty = False
@@ -705,9 +741,9 @@ class MainWindow(QMainWindow):
 
     def _project_template(self) -> None:
         # Use the same axis clipping as DDD, keeping the full editable history in SQLite.
-        self._scenario = deepcopy(self._template_source)
+        self._scenario = copy_scenario(self._template_source)
         self._scenario.set_axis_monday(self._scenario.week_start)
-        self._template_view_blocks = {b.id: deepcopy(b) for b in self._scenario.blocks}
+        self._template_view_blocks = {b.id: replace(b) for b in self._scenario.blocks}
 
     def _set_template_axis(self, chosen: date, anchor_id: str | None = None) -> None:
         self._template_source.week_start = chosen
@@ -761,13 +797,13 @@ class MainWindow(QMainWindow):
                 source_blocks.pop(bid, None)
             for bid, block in current.items():
                 if self._template_view_blocks.get(bid) != block:
-                    source_blocks[bid] = deepcopy(block)
+                    source_blocks[bid] = replace(block)
             full = replace(self._scenario, blocks=list(source_blocks.values()))
             self._ddd_store.save_template_scenario(self._ddd_profile.profile_key, full)
-            self._template_source = deepcopy(full)
-            self._template_view_blocks = {b.id: deepcopy(b) for b in self._scenario.blocks}
+            self._template_source = copy_scenario(full)
+            self._template_view_blocks = {b.id: replace(b) for b in self._scenario.blocks}
             self._ddd_profile = self._ddd_store.get(self._ddd_profile.profile_key)
-            self._ddd_session = self._ddd_store.list_profiles()
+            self._ddd_session = self._ddd_store.list_profile_summaries()
             self._cycle_start = self._scenario.week_start
             self._sync_cycle_edit()
             self._rebuild_ddd_combo()
@@ -787,7 +823,7 @@ class MainWindow(QMainWindow):
 
     def _clear_ddd_profile(self) -> None:
         self._ddd_profile = None
-        self._ddd_session = self._ddd_store.list_profiles()
+        self._ddd_session = self._ddd_store.list_profile_summaries()
         self._cycle_start = None
         self._rebuild_ddd_combo()
 
@@ -926,16 +962,21 @@ class MainWindow(QMainWindow):
             profile_to=profile_to,
             parent=self,
         )
-        if dlg.exec() != ReportPeriodDialog.DialogCode.Accepted:
-            return
         try:
-            path = write_profile_report(
-                self._scenario,
-                range_start=dlg.selected_start(),
-                range_end=dlg.selected_end(),
-                profile_label=self._report_profile_label(),
-                zone=self._zone,
-            )
+            if dlg.exec() != ReportPeriodDialog.DialogCode.Accepted:
+                return
+            start, end = dlg.selected_start(), dlg.selected_end()
+        finally:
+            dlg.deleteLater()
+        try:
+            from spedi.background import run_background
+            snapshot = copy_scenario(self._scenario)
+            label, zone = self._report_profile_label(), self._zone
+            def render_report(task):
+                from brudnopis_ot.core.report_pdf import write_profile_report
+                return write_profile_report(snapshot, range_start=start, range_end=end,
+                                            profile_label=label, zone=zone)
+            path = run_background(self, _tr('Tworzenie raportu PDF…'), render_report)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, _tr("Raport PDF"), f"{_tr('Nie udało się wygenerować raportu:\n')}{exc}")
             return

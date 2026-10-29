@@ -18,12 +18,15 @@ class ImportReport:
     errors: list[str] = field(default_factory=list)
     profiles: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    cancelled: bool = False
 
     def text(self):
         lines = [f"Zaimportowano: {self.imported} · Scalono: {self.merged} · Pominięto: {self.skipped} · Błędy: {len(self.errors)}"]
         lines.extend(p.profile_label for p in self.profiles.values())
         lines.extend(self.errors)
         lines.extend(self.warnings)
+        if self.cancelled:
+            lines.append('Import anulowany. Wcześniej ukończone pliki zostały zapisane.')
         return "\n".join(lines)
 
 
@@ -148,11 +151,15 @@ def _merge_legacy(old, incoming, issues=None):
     return replace(merged, title=old.title, **auxiliary), len(conflicts)
 
 
-def import_files(store, paths, *, loader=load_ddd_profiles):
+def import_files(store, paths, *, loader=load_ddd_profiles, cancelled=None, progress=None):
     """One transaction per file, including all its driver profiles and archive rows."""
     _schema(store)
     report = ImportReport()
-    for raw in paths:
+    paths = list(paths)
+    for index, raw in enumerate(paths):
+        if cancelled and cancelled():
+            report.cancelled = True
+            break
         path = Path(raw)
         try:
             digest = sha256(path.read_bytes()).hexdigest()
@@ -228,6 +235,9 @@ def import_files(store, paths, *, loader=load_ddd_profiles):
                 report.merged += 1
         except Exception as exc:
             report.errors.append(f"{path.name}: {exc}")
+        finally:
+            if progress:
+                progress(index + 1, len(paths))
     return report
 
 

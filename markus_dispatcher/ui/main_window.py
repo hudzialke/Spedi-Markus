@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from spedi.i18n import tr as _tr
+from spedi.background import run_background
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -180,6 +181,7 @@ class MainPanel(QWidget):
     def _sync_firebase(self) -> None:
         dlg = FirebaseSyncDialog(self)
         dlg.exec()
+        dlg.deleteLater()
         self.fleet.reload()
         self.clients.reload()
         if self.fleet.selected_driver_id() is not None:
@@ -188,7 +190,7 @@ class MainPanel(QWidget):
 
     def _export_history(self) -> None:
         try:
-            result = export_history()
+            result = run_background(self, _tr('Eksportowanie historii zleceń…'), lambda task: export_history())
         except Exception as exc:
             QMessageBox.critical(
                 self,

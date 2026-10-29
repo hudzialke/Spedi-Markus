@@ -6,7 +6,7 @@ Unknown history/geography is deliberately not a permission to use a derogation.
 """
 from __future__ import annotations
 
-from copy import deepcopy
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
@@ -16,7 +16,7 @@ from pathlib import Path
 import sqlite3
 from zoneinfo import ZoneInfo
 
-from brudnopis_ot.core.models import ActivityKind, Scenario, WeeklyRestPeriod
+from brudnopis_ot.core.models import ActivityKind, Scenario, WeeklyRestPeriod, copy_scenario
 from brudnopis_ot.core.serialize import scenario_to_dict
 from spedi.mobile_rules import analyze_scenario, build_weekly_rests, detect_mobility_pairs
 
@@ -59,20 +59,20 @@ class WatchStore:
     """Independent additive table in the profile DB; keys survive driver renames."""
     def __init__(self, path: Path):
         self.path = path
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS weekly_watch (
                 profile_key TEXT PRIMARY KEY, selected INTEGER NOT NULL DEFAULT 0,
                 residence_country TEXT NOT NULL DEFAULT '', international_goods INTEGER NOT NULL DEFAULT 0,
                 verified_revision TEXT NOT NULL DEFAULT '')""")
 
     def get(self, key: str) -> WatchOptions:
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn:
             row = conn.execute("SELECT selected, residence_country, international_goods, verified_revision "
                                "FROM weekly_watch WHERE profile_key=?", (key,)).fetchone()
         return WatchOptions(bool(row[0]), row[1], bool(row[2]), row[3]) if row else WatchOptions()
 
     def save(self, key: str, options: WatchOptions) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute("INSERT OR REPLACE INTO weekly_watch VALUES (?, ?, ?, ?, ?)",
                          (key, options.selected, options.residence_country.strip().upper(),
                           options.international_goods, options.verified_revision))
@@ -213,6 +213,61 @@ def _permissions(weekly: list[WeeklyRestPeriod], deadline: datetime, scenario: S
     return "no", "Na ten termin wymagany regularny OT: minima w ruchomych 2/4 tygodniach albo obowiązek po dwóch skróconych."
 
 
+def _compensation_assignments(weekly, week1, regular_limit):
+    """Feasible art. 8(9) assignments for an ordinary four-week return plan.
+
+    One crossing rest counts once. A proposed regular rest counts in week 4.
+    Never postpone a debt independently of the other rests' assignments. A
+    bounded search falls back to the existing conservative start-week dates.
+    Mobility-pair obligations are handled separately by the caller.
+    """
+    week4 = week1 + timedelta(weeks=3)
+    relevant = [r for r in weekly if r.end > midnight(week1)
+                and r.start < midnight(week4) and r.end <= regular_limit]
+    if any(right.start > left.end + timedelta(hours=144)
+           for left, right in zip(relevant, relevant[1:])):
+        yield {}
+        return
+    choices = []
+    combinations = 1
+    for rest in relevant:
+        alternatives = set()
+        retained = []
+        for entries in _assignment_choices(rest):
+            # Splitting 69–89h into 24h+45h would create a new compensation
+            # debt absent from pending. Do not use that artificial reduction
+            # to relax the arrival plan. Two regular rests (>=90h) are safe.
+            if len(entries) > 1 and any(item.classification == 'reduced' for _, item in entries):
+                continue
+            entries = tuple((day, item) for day, item in entries if week1 <= day <= week4)
+            key = tuple((day, item.classification, item.start, item.end) for day, item in entries)
+            if key not in alternatives:
+                alternatives.add(key)
+                retained.append(entries)
+        choices.append(retained)
+        combinations *= len(retained)
+        if combinations > 4096:
+            yield {}
+            return
+    found = False
+    for assignment in product(*choices):
+        assigned = [entry for entries in assignment for entry in entries]
+        valid = True
+        for offset in range(3):
+            left = week1 + timedelta(weeks=offset)
+            right = left + timedelta(weeks=1)
+            window = [item for day, item in assigned if left <= day <= right]
+            proposed = left <= week4 <= right
+            if len(window) + proposed < 2 or not (proposed or any(r.classification == 'regular' for r in window)):
+                valid = False
+                break
+        if valid:
+            found = True
+            yield {item.block_ids: day for day, item in assigned}
+    if not found:
+        yield {}
+
+
 def _home_return(scenario, weekly, debt_scenario, pending, options):
     """Arrival at home/base, with a feasible uninterrupted compensation/45h plan.
 
@@ -258,32 +313,43 @@ def _home_return(scenario, weekly, debt_scenario, pending, options):
 
     # Correct single-debt calendar deadlines to the display jurisdiction. The
     # legacy analyzer uses naive UTC calendar dates for these deadlines.
-    singles = []
-    for debt in pending:
-        if debt.from_pm_pair:
-            continue
-        source = next((r for r in weekly if r.block_ids == debt.source_rest_ids), None)
-        if source is None:
-            continue
-        due = midnight(monday(source.start) + timedelta(weeks=4))
-        if due <= end:
-            singles.append((due, round(debt.remaining * 60)))
-    singles.sort()
-
-    # Earliest deadline first; test each possible division around the regular
-    # 45h. Each compensation remains whole, with capacity counted only once.
     plans = []
-    for split in range(len(singles) + 1):
-        prefix = pair_minutes + sum(minutes for _, minutes in singles[:split])
-        latest = regular_limit - timedelta(minutes=prefix)
-        elapsed = pair_minutes
-        for index, (due, minutes) in enumerate(singles):
-            if index == split:
-                elapsed += 45 * 60
-            elapsed += minutes
-            latest = min(latest, due - timedelta(minutes=elapsed))
-        plans.append((latest, prefix))
-    arrival, prefix = max(plans, key=lambda p: p[0])
+    sources = {rest.block_ids: rest for rest in weekly}
+    ambiguous = any(not debt.from_pm_pair
+                    and (source := sources.get(debt.source_rest_ids)) is not None
+                    and monday(source.start) != monday(source.end - timedelta(microseconds=1))
+                    for debt in pending)
+    assignments = (_compensation_assignments(weekly, week1, regular_limit)
+                   if ambiguous and not pair else ({},))
+    for assigned in assignments:
+        singles = []
+        shifted = []
+        for debt in pending:
+            if debt.from_pm_pair:
+                continue
+            source = sources.get(debt.source_rest_ids)
+            if source is None:
+                continue
+            source_week = assigned.get(source.block_ids, monday(source.start))
+            due = midnight(source_week + timedelta(weeks=4))
+            if source_week != monday(source.start):
+                shifted.append((source_week, due))
+            if due <= end:
+                singles.append((due, round(debt.remaining * 60)))
+        singles.sort()
+        # Earliest deadline first; each compensation stays whole and is used
+        # once. Compare complete feasible plans, not per-debt maxima.
+        for split in range(len(singles) + 1):
+            prefix = pair_minutes + sum(minutes for _, minutes in singles[:split])
+            latest = regular_limit - timedelta(minutes=prefix)
+            elapsed = pair_minutes
+            for index, (due, minutes) in enumerate(singles):
+                if index == split:
+                    elapsed += 45 * 60
+                elapsed += minutes
+                latest = min(latest, due - timedelta(minutes=elapsed))
+            plans.append((latest, prefix, singles, shifted))
+    arrival, prefix, singles, shifted = max(plans, key=lambda p: p[0])
     compensation = pair_minutes + sum(minutes for _, minutes in singles)
     if pair:
         reason = "Powrót przed regularnym OT po dwóch kolejnych skróconych: obie rekompensaty bez przerwy przed 45 h."
@@ -294,6 +360,10 @@ def _home_return(scenario, weekly, debt_scenario, pending, options):
         if not before or before[-1].end + timedelta(hours=144) < week4:
             reason += " To granica 4. tygodnia; kolejne OT mogą przyspieszyć termin."
     reason += f" Start tygodnia 1: {week1:%d.%m.%Y}."
+    for source_week, due in sorted(set(shifted)):
+        local_due = due.replace(tzinfo=timezone.utc).astimezone(WARSAW)
+        reason += (f" OT obejmujący granicę tygodni przypisano do tygodnia od {source_week:%d.%m.%Y};"
+                   f" rekompensata do {local_due:%d.%m.%Y %H:%M}.")
     if compensation:
         after = compensation - prefix
         reason += f" Plan od powrotu: {prefix // 60}:{prefix % 60:02d} rekompensaty + 45:00 OT + {after // 60}:{after % 60:02d} rekompensaty."
@@ -303,7 +373,7 @@ def _home_return(scenario, weekly, debt_scenario, pending, options):
 
 
 def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> WatchResult:
-    full = deepcopy(scenario)
+    full = copy_scenario(scenario)
     last_activity = max((b.end for b in full.blocks), default=None)
     # Analyze all stored history, including the part hidden before 'week 1'.
     if full.blocks:
@@ -327,7 +397,7 @@ def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> Wat
         reduced = [r for r in rests if r.classification == "reduced"]
         retained = None if any(r.classification == "regular" for r in rests) else (reduced[-1] if reduced else None)
         extras.update(bid for r in reduced if r is not retained for bid in r.block_ids)
-    debt_scenario = deepcopy(full)
+    debt_scenario = copy_scenario(full)
     debt_scenario.blocks = [b for b in debt_scenario.blocks if b.id not in extras]
     # Timing obligations after two reductions must not disappear merely because
     # a manually entered block lacks the old 'abroad' checkbox. Geography is

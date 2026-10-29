@@ -11,7 +11,13 @@ from brudnopis_ot.core.models import ActivityKind, Block, Scenario
 
 
 def _dt_to_str(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+    # Preserve the legacy wall time and second precision without invoking
+    # strftime for every endpoint in a large scenario.
+    if dt.year < 1000:
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt.isoformat(timespec='seconds')
 
 
 def _dt_from_str(value: str) -> datetime:

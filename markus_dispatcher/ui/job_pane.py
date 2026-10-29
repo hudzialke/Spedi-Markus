@@ -5,7 +5,7 @@ from spedi.i18n import tr as _tr
 from pathlib import Path
 import json
 
-from PySide6.QtCore import QBuffer, QDate, QDateTime, QIODevice, Qt, QUrl, Signal
+from PySide6.QtCore import QBuffer, QDate, QDateTime, QIODevice, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
@@ -118,6 +118,7 @@ class JobPane(QWidget):
         self._load_thread = None
         self._unload_thread = None
         self._geocode_gen = {"load": 0, "unload": 0}
+        self._pending_geocode = {"load": None, "unload": None}
         self._preview_dirty = False
         self._updating_preview = False
 
@@ -378,17 +379,20 @@ class JobPane(QWidget):
             return
         from markus_dispatcher.ui.document_import_dialog import DocumentImportDialog
         dialog = DocumentImportDialog(self)
-        if dialog.exec() != DocumentImportDialog.DialogCode.Accepted:
-            return
-        if any((self.ref_edit.text().strip(), self.client_edit.text().strip(),
-                self.load_address.toPlainText().strip(), self.unload_address.toPlainText().strip(),
-                self.pod_requirements_edit.toPlainText().strip())):
-            if QMessageBox.question(self, _tr('Przenieś dane'),
-                _tr('Przenieść wskazane pola do bieżącego zlecenia? Pola wskazane w importerze zastąpią ich obecne wartości.'),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        try:
+            if dialog.exec() != DocumentImportDialog.DialogCode.Accepted:
                 return
-        self._apply_document_import(dialog.values, dialog.sources, dialog.source_path, dialog.clipboard_image)
+            if any((self.ref_edit.text().strip(), self.client_edit.text().strip(),
+                    self.load_address.toPlainText().strip(), self.unload_address.toPlainText().strip(),
+                    self.pod_requirements_edit.toPlainText().strip())):
+                if QMessageBox.question(self, _tr('Przenieś dane'),
+                    _tr('Przenieść wskazane pola do bieżącego zlecenia? Pola wskazane w importerze zastąpią ich obecne wartości.'),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                    return
+            self._apply_document_import(dialog.values, dialog.sources, dialog.source_path, dialog.clipboard_image)
+        finally:
+            dialog.deleteLater()
 
     def _apply_document_import(self, values, sources, source_path=None, clipboard_image=None):
         self._cancel_geocode()
@@ -687,6 +691,7 @@ class JobPane(QWidget):
     def _on_address_changed(self, side: str) -> None:
         if self._loading_history:
             return
+        self._pending_geocode[side] = None
         address_edit = self.load_address if side == "load" else self.unload_address
         status_lbl = self.load_status if side == "load" else self.unload_status
         address = address_edit.toPlainText().strip()
@@ -729,6 +734,7 @@ class JobPane(QWidget):
         """Unieważnia trwające geokodowanie (zmiana kierowcy / zlecenia)."""
         self._geocode_gen["load"] += 1
         self._geocode_gen["unload"] += 1
+        self._pending_geocode = {"load": None, "unload": None}
         for thread in (self._load_thread, self._unload_thread):
             if thread is not None and thread.isRunning():
                 thread.quit()
@@ -755,11 +761,26 @@ class JobPane(QWidget):
             status_lbl.setStyleSheet("")
             self._refresh_preview()
             return
+        active = self._load_thread if side == 'load' else self._unload_thread
+        if active is not None and (
+            self._pending_geocode[side] == address or (
+                active.property('geocode_address') == address
+                and active.property('geocode_generation') == self._geocode_gen[side])):
+            return
         self._geocode_gen[side] += 1
         gen = self._geocode_gen[side]
         status_lbl.setText(_tr("Szukam współrzędnych…"))
         status_lbl.setStyleSheet("")
+        if active is not None:
+            # Keep only the latest explicit request until the current HTTP call
+            # exits; quit() cannot interrupt that call or its retry delays.
+            self._pending_geocode[side] = address
+            return
         thread = start_geocode(self, side, address)
+        thread.setProperty('geocode_side', side)
+        thread.setProperty('geocode_address', address)
+        thread.setProperty('geocode_generation', gen)
+        thread.finished.connect(self._geocode_finished)
         worker = thread._worker  # type: ignore[attr-defined]
 
         def on_ok(_side: str, lat: float, lon: float) -> None:
@@ -779,16 +800,29 @@ class JobPane(QWidget):
         worker.finished.connect(on_ok, Qt.ConnectionType.QueuedConnection)
         worker.failed.connect(on_fail, Qt.ConnectionType.QueuedConnection)
         if side == "load":
-            if self._load_thread is not None and self._load_thread.isRunning():
-                self._load_thread.quit()
             self._load_thread = thread
         else:
-            if self._unload_thread is not None and self._unload_thread.isRunning():
-                self._unload_thread.quit()
             self._unload_thread = thread
         thread.start()
 
+    @Slot()
+    def _geocode_finished(self):
+        thread = self.sender()
+        side = thread.property('geocode_side')
+        if side == 'load':
+            self._load_thread = None
+        else:
+            self._unload_thread = None
+        address, self._pending_geocode[side] = self._pending_geocode[side], None
+        thread._worker = None
+        thread.deleteLater()
+        edit = self.load_address if side == 'load' else self.unload_address
+        if address is not None and edit.toPlainText().strip() == address:
+            self._request_geocode(side)
+
     def _refresh_preview(self) -> None:
+        if self._loading_history:
+            return
         data = self.collect()
         self._maps_url = data.maps_url
         if self._preview_dirty:
@@ -799,6 +833,9 @@ class JobPane(QWidget):
         )
 
     def _set_preview_text(self, text: str, *, dirty: bool) -> None:
+        if self.preview.toPlainText() == text:
+            self._preview_dirty = dirty
+            return
         self._updating_preview = True
         self.preview.setPlainText(text)
         self._updating_preview = False

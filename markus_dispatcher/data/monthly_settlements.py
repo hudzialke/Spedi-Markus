@@ -58,5 +58,6 @@ def bind_driver(month: str, driver_id: int, file_id: str, sheet_id: int) -> None
 
 
 def jobs_for_month(driver_id: int, month: str):
-    return [job for job in db.list_jobs_for_driver(driver_id, chronological=True)
+    candidate = month if isinstance(month, str) and re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', month) else None
+    return [job for job in db.list_jobs_for_driver(driver_id, chronological=True, unload_month=candidate)
             if month_of(job.unload_datetime) == month]

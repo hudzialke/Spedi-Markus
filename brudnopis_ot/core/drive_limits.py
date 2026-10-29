@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 
 from brudnopis_ot.core.calendar_weeks import format_duration_hm, week_bounds, week_index
 from brudnopis_ot.core.daily_summary import build_daily_totals
+from brudnopis_ot.core.interval_index import IntervalIndex
 from brudnopis_ot.core.models import (
     ActivityKind,
     Block,
@@ -56,16 +57,20 @@ def _period_summaries(
     blocks: list[Block],
     *,
     now_end: datetime | None = None,
+    block_index: IntervalIndex | None = None,
 ) -> list[str]:
     """Sumy jazda/praca/odpoczynek między kolejnymi OT (i po ostatnim)."""
     lines: list[str] = []
     rest_kinds = (ActivityKind.REST, ActivityKind.CARD_OUT)
+    if block_index is None:
+        block_index = IntervalIndex(blocks, lambda b: (b.start, b.end))
 
     def _line(label: str, a: datetime, b: datetime) -> str:
-        drive = _sum_kind_hours(blocks, ActivityKind.DRIVE, a, b)
-        work = _sum_kind_hours(blocks, ActivityKind.WORK, a, b)
-        avail = _sum_kind_hours(blocks, ActivityKind.AVAILABILITY, a, b)
-        rest = _sum_kind_hours(blocks, rest_kinds, a, b)
+        relevant = block_index.overlapping(a, b, original_order=True)
+        drive = _sum_kind_hours(relevant, ActivityKind.DRIVE, a, b)
+        work = _sum_kind_hours(relevant, ActivityKind.WORK, a, b)
+        avail = _sum_kind_hours(relevant, ActivityKind.AVAILABILITY, a, b)
+        rest = _sum_kind_hours(relevant, rest_kinds, a, b)
         return (
             f"Między OT {label}: jazda {format_duration_hm(drive)}, "
             f"praca {format_duration_hm(work)}, dysp. {format_duration_hm(avail)}, "
@@ -135,21 +140,34 @@ def analyze_drive_limits(
     blocks = scenario.blocks
     weekly = [w for w in weekly_rests if w.is_weekly]
 
-    summaries = _period_summaries(weekly, blocks)
+    block_index = IntervalIndex(blocks, lambda b: (b.start, b.end))
+    summaries = _period_summaries(weekly, blocks, block_index=block_index)
     hints.extend(summaries)
+
+    # A single daily pass replaces one full-history scan per week and per
+    # extended driving day. Keep weekly hours in seconds, as before: daily
+    # totals round each block to minutes and must not alter weekly thresholds.
+    daily = {day.day: day for day in build_daily_totals(
+        blocks, range_start=scenario.week_start,
+        range_end=scenario.week_start + timedelta(days=scenario.weeks * 7 - 1))}
+    week_hours = []
+    for i in range(scenario.weeks):
+        monday = scenario.week_start + timedelta(days=7 * i)
+        start, end = week_bounds(monday)
+        relevant = block_index.overlapping(start, end, original_order=True)
+        week_hours.append(_calendar_week_drive_hours(relevant, monday))
 
     for widx in range(scenario.weeks):
         monday = scenario.week_start + timedelta(days=7 * widx)
-        drive_h = _calendar_week_drive_hours(blocks, monday)
-        extended_days = _extended_drive_days_in_week(blocks, monday)
+        drive_h = week_hours[widx]
+        extended_days = [day for offset in range(7)
+                         if (day := monday + timedelta(days=offset)) in daily
+                         and daily[day].drive_min / 60.0 > DAILY_DRIVE_LIMIT_H + 1e-6]
         remaining_10 = max(0, MAX_EXTENDED_DAYS_PER_WEEK - len(extended_days))
 
         # Dni z jazdą > 10h
         for day in extended_days:
-            day_totals = build_daily_totals(blocks, range_start=day, range_end=day)
-            if not day_totals:
-                continue
-            hours = day_totals[0].drive_min / 60.0
+            hours = daily[day].drive_min / 60.0
             if hours > DAILY_DRIVE_EXTENDED_H + 1e-6:
                 day_start = datetime.combine(day, datetime.min.time())
                 findings.append(
@@ -208,8 +226,8 @@ def analyze_drive_limits(
     for widx in range(max(0, scenario.weeks - 1)):
         m1 = scenario.week_start + timedelta(days=7 * widx)
         m2 = m1 + timedelta(days=7)
-        h1 = _calendar_week_drive_hours(blocks, m1)
-        h2 = _calendar_week_drive_hours(blocks, m2)
+        h1 = week_hours[widx]
+        h2 = week_hours[widx + 1]
         total = h1 + h2
         if total > BIWEEKLY_DRIVE_LIMIT_H + 1e-6:
             start, _ = week_bounds(m1)

@@ -51,6 +51,7 @@ def run(report_path: str) -> int:
             assert pdf.load(str(pdf_path)) == QPdfDocument.Error.None_
             assert pdf_text_in_rect(pdf, 0, QRectF(40, 80, 220, 80)) == 'LOAD DEMO\nTest Street 12'
             pdf.close()
+            del pdf
             dialog = DocumentImportDialog()
             dialog.open_path(pdf_path)
             assert dialog.pdf.pageCount() == 1
@@ -64,6 +65,10 @@ def run(report_path: str) -> int:
             assert dialog.selection.toPlainText() == 'LOAD DEMO\nTest Street 12'
             dialog.reject()
             app.processEvents()
+            renamed_pdf = root / 'released.pdf'
+            pdf_path.rename(renamed_pdf)
+            renamed_pdf.unlink()
+            assert dialog._pdf_lease.buffer.size() == 0
             report['checks'].append('pdf-columns-and-import-dialog')
 
             from datetime import date, datetime, timedelta
@@ -89,6 +94,18 @@ def run(report_path: str) -> int:
             watch.reject()
             report['checks'].append('background-weekly-watch')
 
+            from spedi.weekly_watch import calculate, history_revision
+            crossing = Scenario(week_start=date(2026, 10, 5), blocks=[
+                Block(ActivityKind.REST, datetime(2026, 9, 7), datetime(2026, 10, 5, 11, 38)),
+                Block(ActivityKind.REST, datetime(2026, 10, 11, 11, 29), datetime(2026, 10, 12, 12, 53)),
+                Block(ActivityKind.REST, datetime(2026, 10, 16, 15, 38), datetime(2026, 10, 19, 5, 29)),
+                Block(ActivityKind.REST, datetime(2026, 10, 24, 15, 24), datetime(2026, 10, 25, 15, 33)),
+            ])
+            arrival = calculate(crossing, WatchOptions(verified_revision=history_revision(crossing)))
+            assert arrival.return_by == arrival.weekly_start_by == datetime(2026, 10, 31, 15, 33)
+            assert '09.11.2026 00:00' in arrival.return_reason
+            report['checks'].append('cross-week-compensation-return')
+
             workbook = Workbook()
             workbook.active['A1'] = 'SYNTHETIC POD'
             sheet_path = root / 'synthetic.xlsx'
@@ -96,6 +113,13 @@ def run(report_path: str) -> int:
             assert 'SYNTHETIC POD' in read_spreadsheet(sheet_path)[0].html
             assert xlrd.__version__
             report['checks'].append('excel-readers')
+            csv_path = root / 'preview-pages.csv'
+            csv_path.write_text('\n'.join(';'.join(f'SYNTHETIC {row}/{col}' for col in range(10))
+                                          for row in range(301)), encoding='utf-8')
+            pages = read_spreadsheet(csv_path)
+            assert len(pages) == 4 and '301–301' in pages[-1].title
+            assert 'SYNTHETIC 300/9' in pages[-1].html
+            report['checks'].append('bounded-spreadsheet-preview-pages')
 
             engine = tesseract_path()
             assert engine, 'missing packaged OCR'
@@ -140,6 +164,32 @@ def run(report_path: str) -> int:
             assert sum(s.end_minute-s.start_minute for s in rows if s.activity == 'availability') == 244
             assert not any(b.kind == ActivityKind.AVAILABILITY for b in store.load_ddd_scenario(profile.profile_key, original=True).blocks)
             report['checks'].append('ddd-open-activity-and-confirmed-end')
+            # Exercise constructors too: Qt's hooks must include every plugin
+            # required by lazily created pages, rather than just their imports.
+            from spedi.shell import ShellWindow
+            from spedi.background import run_background
+            shell = ShellWindow()
+            shell._mobile_timer.stop()
+            assert shell._loaded_pages == {0}
+            for index in (1, 2, 0, 1, 2):
+                shell._show_page(index)
+            assert shell._loaded_pages == {0, 1, 2}
+            assert run_background(shell, 'SYNTHETIC', lambda task: 42) == 42
+            shell.close()
+            shell.deleteLater()
+            app.processEvents()
+            report['checks'].append('lazy-pages-and-background-operations')
+            from brudnopis_ot.core.report_pdf import write_profile_report
+            from ewidentor.core.report_pdf import export_month_pdf
+            from ewidentor.core.month_card import build_month_card
+            from ewidentor.core.models import Driver
+            generated = write_profile_report(scenario, range_start=date(2026, 8, 3), range_end=date(2026, 8, 10),
+                                              output_path=root/'scratchpad.pdf')
+            assert generated.read_bytes().startswith(b'%PDF-')
+            month = build_month_card(Driver(None, 'SYNTHETIC'), 2026, 10, [], [])
+            generated = export_month_pdf(month, root/'month.pdf')
+            assert generated.read_bytes().startswith(b'%PDF-')
+            report['checks'].append('lazy-pdf-report-generators')
             report['ok'] = True
     except Exception as error:
         # Exception text can contain paths; keep the report free of user data.

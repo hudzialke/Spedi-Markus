@@ -38,6 +38,9 @@ wymagają ręcznego doprecyzowania. Pełne okno czasowe zachowaj w uwagach.
 - XLSX/XLSM: openpyxl. XLS: xlrd. Zachowywane są granice komórek; w XLSX także
   komórki scalone. Makra i formuły nie są wykonywane. Formuły mają wyłącznie
   wyniki wcześniej zapisane w pliku; ich brak może dać pustą komórkę.
+  Duże arkusze są dzielone na strony podglądu. Z listy wybierz zakres wierszy
+  i kolumn; wszystkie komórki pozostają dostępne. Scalone pole przecinające
+  granicę podglądu jest pokazane jako kontynuacja także na kolejnej stronie.
 - Stary DOC: wymaga lokalnego LibreOffice (`soffice` w PATH albo standardowym
   katalogu Program Files). Konwersja działa w osobnym profilu z zablokowanymi
   makrami, aktualizacją łączy i odnośnikami spoza zaufanych lokalizacji.

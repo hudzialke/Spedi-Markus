@@ -343,3 +343,63 @@ def test_clipboard_image_is_a_local_source_and_cancel_does_not_save(app, local_d
         assert db.list_jobs(include_done=True) == []
     finally:
         QGuiApplication.clipboard().setImage(previous)
+
+
+def test_pdf_leases_are_exclusive_bounded_and_close_file_handles(app, columns_pdf, tmp_path):
+    from PySide6.QtCore import QThread
+    from PySide6.QtPdf import QPdfDocument
+    from markus_dispatcher.ui.pdf_documents import PdfDocumentLease
+    leases = [PdfDocumentLease() for _ in range(7)]
+    try:
+        assert len({id(item.document) for item in leases}) == 7
+        for item in leases:
+            assert item.document.thread() == QThread.currentThread()
+            assert item.load_path(columns_pdf) == QPdfDocument.Error.None_
+        leases[0].release()
+        assert leases[1].document.pageCount() == 2
+    finally:
+        for item in leases:
+            item.release()
+    assert len(app._spedi_pdf_documents) == 4
+    assert all(item.buffer.size() == 0 for item in leases)
+    renamed = tmp_path / 'released.pdf'
+    columns_pdf.rename(renamed)
+    renamed.unlink()
+
+
+def test_pdf_worker_returns_backend_on_cancel_and_failure(app, columns_pdf, tmp_path, wait_for):
+    from PySide6.QtCore import QThread
+    from markus_dispatcher.ui.document_import_dialog import PdfPageTask
+    for path, cancel in ((columns_pdf, True), (tmp_path/'missing.pdf', False)):
+        stat = columns_pdf.stat()
+        task = PdfPageTask(path, 0, 1, (stat.st_mtime_ns, stat.st_size))
+        lease = task._document_lease
+        failures = []
+        task.failed.connect(lambda *args: failures.append(args))
+        task.start()
+        if cancel:
+            task.requestInterruption()
+        wait_for(lambda: not task.isRunning() and lease.released)
+        assert lease.document.thread() == QThread.currentThread()
+        assert lease.document.pageCount() == 0
+        assert cancel or failures
+        task.deleteLater()
+
+
+def test_reused_dialog_cannot_close_another_dialog_pdf(app, columns_pdf, wait_for):
+    from markus_dispatcher.ui.document_import_dialog import DocumentImportDialog
+    first = DocumentImportDialog()
+    first.reject()
+    second = DocumentImportDialog()
+    second.open_path(columns_pdf)
+    try:
+        wait_for(lambda: second._pdf_worker is None)
+        first._clear_document()
+        assert first.pdf is not second.pdf
+        assert second.pdf.pageCount() == 2
+        assert second._page_cache
+    finally:
+        first.reject()
+        second.reject()
+        first.deleteLater()
+        second.deleteLater()

@@ -1,7 +1,7 @@
 """Persistent scenario corrections, kept separately from imported DDD evidence."""
-from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
+from bisect import bisect_right
 
 from brudnopis_ot.core.ddd_blocks import scenario_from_segments
 from brudnopis_ot.core.serialize import block_from_dict, scenario_from_dict
@@ -33,21 +33,31 @@ def rebase_scenario(baseline, edited, current):
     before = {b.id: b for b in baseline.blocks}
     after = {b.id: b for b in edited.blocks}
     removed = [b for bid, b in before.items() if after.get(bid) != b]
-    additions = [deepcopy(b) for bid, b in after.items() if before.get(bid) != b]
+    additions = [replace(b) for bid, b in after.items() if before.get(bid) != b]
+    # Subtract the union of changed source intervals. Rechecking every removed
+    # block against every current block made long edited histories quadratic.
+    cuts = []
+    for old in sorted(removed, key=lambda b: b.start):
+        if cuts and old.start <= cuts[-1][1]:
+            cuts[-1] = (cuts[-1][0], max(cuts[-1][1], old.end))
+        else:
+            cuts.append((old.start, old.end))
+    cut_ends = [end for _, end in cuts]
     blocks = []
     for block in current.blocks:
-        pieces = [(block.start, block.end)]
-        for old in removed:
-            next_pieces = []
-            for start, end in pieces:
-                if old.end <= start or old.start >= end:
-                    next_pieces.append((start, end))
-                else:
-                    if start < old.start:
-                        next_pieces.append((start, old.start))
-                    if old.end < end:
-                        next_pieces.append((old.end, end))
-            pieces = next_pieces
+        pieces = []
+        cursor = block.start
+        index = bisect_right(cut_ends, cursor)
+        while index < len(cuts) and cuts[index][0] < block.end:
+            start, end = cuts[index]
+            if cursor < start:
+                pieces.append((cursor, start))
+            cursor = max(cursor, end)
+            if cursor >= block.end:
+                break
+            index += 1
+        if cursor < block.end:
+            pieces.append((cursor, block.end))
         for start, end in pieces:
             part = replace(block, start=start, end=end)
             if (start, end) != (block.start, block.end):
@@ -65,11 +75,11 @@ def rebase_scenario(baseline, edited, current):
 
 def update_full_scenario(source, previous_view, view):
     """Write only visible changes; axis clipping never deletes hidden history."""
-    blocks = {b.id: deepcopy(b) for b in source.blocks}
+    blocks = {b.id: replace(b) for b in source.blocks}
     current = {b.id: b for b in view.blocks}
     for identity in previous_view.keys() - current.keys():
         blocks.pop(identity, None)
     for identity, block in current.items():
         if previous_view.get(identity) != block:
-            blocks[identity] = deepcopy(block)
+            blocks[identity] = replace(block)
     return replace(view, blocks=list(blocks.values()))

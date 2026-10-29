@@ -104,6 +104,8 @@ def init_db() -> None:
             """
         )
         _migrate(conn)
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_jobs_driver ON jobs(driver_id, id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_attachments_job ON attachments(job_id, id)')
     _maybe_import_rozpiska()
 
 
@@ -446,17 +448,26 @@ def list_jobs_for_driver(
     *,
     chronological: bool = True,
     include_done: bool = True,
+    unload_month: str | None = None,
 ) -> list[JobData]:
     """Lista zleceń kierowcy — chronologicznie po dacie załadunku."""
     from markus_dispatcher.core.job_archive import parse_job_stamp
 
     where = "WHERE driver_id = ?"
+    parameters = [driver_id]
     if not include_done:
         where += " AND status NOT IN ('done', 'cancelled')"
+    if unload_month is not None:
+        # Select candidates before decoding and sorting whole job objects.
+        # Nonstandard date strings still go through the original Python parser.
+        where += (" AND (substr(unload_datetime, 4, 7) = ? OR length(unload_datetime) != 16 "
+                  "OR substr(unload_datetime, 3, 1) != '.' OR substr(unload_datetime, 6, 1) != '.' "
+                  "OR substr(unload_datetime, 11, 1) != ' ')")
+        parameters.append(f'{unload_month[5:7]}.{unload_month[:4]}')
     with get_conn() as conn:
         rows = conn.execute(
             f"SELECT * FROM jobs {where} ORDER BY id ASC",
-            (driver_id,),
+            parameters,
         ).fetchall()
     jobs = [_row_to_job(row) for row in rows]
     if chronological:

@@ -755,5 +755,18 @@
   "Potwierdzony koniec: ": "Confirmed end: ",
   "Brak potwierdzonego końca — czas trwania nie jest jeszcze liczony.": "No confirmed end — duration is not included in totals yet.",
   "Nieznany koniec": "Unknown end",
-  "Nieustalony": "Undetermined"
+  "Nieustalony": "Undetermined",
+  "Importowanie plików DDD…": "Importing DDD files…",
+  "Przeliczanie archiwum DDD…": "Recalculating the DDD archive…",
+  "Odczytywanie pliku DDD…": "Reading the DDD file…",
+  "Kończenie bieżącej operacji…": "Finishing the current operation…",
+  "Ładowanie Ewidentora…": "Loading Ewidentor…",
+  "Ładowanie Dispatchera…": "Loading Dispatcher…",
+  "Wczytywanie historii kierowcy…": "Loading driver history…",
+  "Zapisywanie zmian…": "Saving changes…",
+  "Kończenie zadań w tle przed zamknięciem…": "Finishing background tasks before closing…",
+  "Poczekaj na zakończenie synchronizacji.": "Wait for synchronization to finish.",
+  "Eksportowanie historii zleceń…": "Exporting order history…",
+  "Tworzenie raportu PDF…": "Generating the PDF report…",
+  "Nie można wczytać profilu": "Unable to load the profile"
 }

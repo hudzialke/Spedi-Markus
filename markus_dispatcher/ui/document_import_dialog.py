@@ -6,7 +6,7 @@ import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from PySide6.QtCore import QBuffer, QIODevice, QRectF, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QBuffer, QIODevice, QRectF, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtWidgets import (
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from markus_dispatcher.core import document_import as readers
+from markus_dispatcher.ui.pdf_documents import PdfDocumentLease
 from spedi.i18n import tr as _tr
 
 
@@ -104,14 +105,25 @@ class PdfPageTask(QThread):
     def __init__(self, path, page, generation, stamp, parent=None):
         super().__init__(parent)
         self.path, self.page, self.generation, self.stamp = path, page, generation, stamp
+        self._document_lease = PdfDocumentLease()
+        self.finished.connect(self._return_document, Qt.ConnectionType.QueuedConnection)
+        self.destroyed.connect(self._document_lease.release)
+
+    def start(self, priority=QThread.Priority.InheritPriority):
+        self._document_lease.move_to(self)
+        super().start(priority)
+
+    @Slot()
+    def _return_document(self):
+        self._document_lease.release()
 
     def run(self):
-        document = QPdfDocument()  # Created, used and closed in this thread only.
+        document = self._document_lease.document
         try:
             def unchanged():
                 stat = self.path.stat()
                 return (stat.st_mtime_ns, stat.st_size) == self.stamp
-            if not unchanged() or document.load(str(self.path)) != QPdfDocument.Error.None_:
+            if not unchanged() or self._document_lease.load_path(self.path) != QPdfDocument.Error.None_:
                 raise ValueError(_tr('Dokument zmienił się lub jest niedostępny. Otwórz go ponownie.'))
             size = document.pagePointSize(self.page)
             factor = min(1.6, 1800/max(size.width(), size.height()))
@@ -131,7 +143,7 @@ class PdfPageTask(QThread):
         except Exception:
             self.failed.emit(self.generation, _tr('Nie można przygotować strony. Użyj OCR lub otwórz dokument ponownie.'))
         finally:
-            document.close()
+            self._document_lease.park()
 
 
 class LocalTextPreview(QTextBrowser):
@@ -251,7 +263,9 @@ class DocumentImportDialog(QDialog):
         self.source_path: Path | None = None
         self.clipboard_image = QImage()
         self._temporary = tempfile.TemporaryDirectory(prefix='spedi-import-', ignore_cleanup_errors=True)
-        self.pdf = QPdfDocument(self)
+        self._pdf_lease = PdfDocumentLease()
+        self.pdf = self._pdf_lease.document
+        self.destroyed.connect(self._pdf_lease.release)
         self.sections = []
         self.pdf_mode = False
         self.current = 0
@@ -435,10 +449,14 @@ class DocumentImportDialog(QDialog):
             QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
     def _clear_document(self):
+        if self._pdf_lease.released:
+            self._pdf_lease = PdfDocumentLease()
+            self.pdf = self._pdf_lease.document
+            self.destroyed.connect(self._pdf_lease.release)
         self._cancel_pdf()
         self._page_cache.clear()
         self._page_index = None
-        self.pdf.close()
+        self._pdf_lease._close()
         self.sections = []
         self.source_path = None
         self.clipboard_image = QImage()
@@ -475,7 +493,7 @@ class DocumentImportDialog(QDialog):
                 self._reader = ReadTask(path, Path(self._temporary.name), self)
                 self._reader.succeeded.connect(self._read_ready)
                 self._reader.failed.connect(self._read_failed)
-                self._reader.finished.connect(lambda: self._set_busy(False))
+                self._reader.finished.connect(self._background_finished)
                 self._set_busy(True)
                 self.status.setText(_tr('Przygotowuję lokalny podgląd dokumentu…'))
                 self._reader.start()
@@ -495,7 +513,7 @@ class DocumentImportDialog(QDialog):
             self._read_failed(str(error) if isinstance(error, ValueError) else _tr('Nie można otworzyć dokumentu.'))
 
     def _load_pdf(self, path):
-        if self.pdf.load(str(path)) != QPdfDocument.Error.None_ or not self.pdf.pageCount():
+        if self._pdf_lease.load_path(path) != QPdfDocument.Error.None_ or not self.pdf.pageCount():
             raise ValueError(_tr('Nie można otworzyć PDF. Sprawdź, czy plik jest poprawny i nie wymaga hasła.'))
         self.pdf_mode = True
         self._pdf_path = Path(path)
@@ -722,7 +740,7 @@ class DocumentImportDialog(QDialog):
         self._ocr = OcrTask(self._crop, self)
         self._ocr.succeeded.connect(self._ocr_ready)
         self._ocr.failed.connect(self.status.setText)
-        self._ocr.finished.connect(lambda: self._set_busy(False))
+        self._ocr.finished.connect(self._background_finished)
         self._set_busy(True)
         self.status.setText(_tr('Odczyt lokalny… limit 2 GB pamięci, 45 sekund i dwa wątki. PL / EN / DE / FR / IT.'))
         self._ocr.start()
@@ -730,6 +748,16 @@ class DocumentImportDialog(QDialog):
     def _ocr_ready(self, text):
         self.selection.setPlainText(text)
         self.status.setText(_tr('Sprawdź wynik OCR przed przypisaniem.') if text else _tr('OCR nie znalazł tekstu. Popraw zaznaczenie lub wpisz treść ręcznie.'))
+
+    @Slot()
+    def _background_finished(self):
+        worker = self.sender()
+        if self._reader is worker:
+            self._reader = None
+        if self._ocr is worker:
+            self._ocr = None
+        worker.deleteLater()
+        self._set_busy(self._busy())
 
     def _selection_edited(self):
         self._pending_region = None
@@ -832,6 +860,6 @@ class DocumentImportDialog(QDialog):
             self.status.setText(_tr('Kończę przygotowanie strony…'))
             return
         self._page_cache.clear()
-        self.pdf.close()
+        self._pdf_lease.release()
         self._temporary.cleanup()
         super().done(result)

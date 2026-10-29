@@ -427,7 +427,11 @@ def open_watchlist(brudnopis):
         if not saved:
             return
     try:
-        WeeklyWatchDialog(brudnopis._ddd_store, brudnopis).exec()
+        dialog = WeeklyWatchDialog(brudnopis._ddd_store, brudnopis)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
     except Exception as exc:
         QMessageBox.critical(brudnopis, _tr("Lista OT"), f"{_tr('Nie udało się otworzyć listy: ')}{exc}")
 

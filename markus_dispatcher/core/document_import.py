@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import io
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -22,6 +23,9 @@ from markus_dispatcher.core.limited_process import OCR_MEMORY_BYTES, ResourceLim
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_XML_BYTES = 20 * 1024 * 1024
 MAX_CELLS = 100_000
+PREVIEW_PAGE_ROWS = 100
+PREVIEW_PAGE_COLUMNS = 40
+PREVIEW_PAGE_CELLS = 2_000
 OCR_LANGUAGES = ('pol', 'eng', 'deu', 'fra', 'ita')
 _OCR_SLOT = threading.BoundedSemaphore(1)
 WORD_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
@@ -104,6 +108,90 @@ def _table(rows) -> str:
     return '<table border="1" cellspacing="0" cellpadding="7">' + ''.join(parts) + '</table>'
 
 
+def _page_title(name, bounds, paginated):
+    if not paginated:
+        return name
+    r0, r1, c0, c1 = bounds
+    return f'{name} · wiersze {r0}–{r1} · kolumny {c0}–{c1}'
+
+
+def _row_table_sections(name, rows):
+    """Bound Qt's table layout work without dropping any CSV/XLS values."""
+    pages = []
+    pending = []
+    count = 0
+    first_row = 1
+
+    def flush():
+        nonlocal pending, count
+        if pending:
+            width = max((len(row) for row in pending), default=1)
+            pages.append(((first_row, first_row + len(pending) - 1, 1, max(1, width)), _table(pending)))
+            pending, count = [], 0
+
+    for row_number, row in enumerate(rows, 1):
+        if len(row) > PREVIEW_PAGE_COLUMNS:
+            flush()
+            for offset in range(0, len(row), PREVIEW_PAGE_COLUMNS):
+                cells = row[offset:offset + PREVIEW_PAGE_COLUMNS]
+                pages.append(((row_number, row_number, offset + 1, offset + len(cells)), _table([cells])))
+            continue
+        if pending and (len(pending) >= PREVIEW_PAGE_ROWS or count + max(1, len(row)) > PREVIEW_PAGE_CELLS):
+            flush()
+        if not pending:
+            first_row = row_number
+        pending.append(row)
+        count += max(1, len(row))
+    flush()
+    if not pages:
+        pages.append(((1, 1, 1, 1), _table([])))
+    return [PreviewSection(_page_title(name, bounds, len(pages) > 1), html) for bounds, html in pages]
+
+
+def _xlsx_sections(sheet):
+    width = min(PREVIEW_PAGE_COLUMNS, max(1, sheet.max_column))
+    height = min(PREVIEW_PAGE_ROWS, max(1, PREVIEW_PAGE_CELLS // width))
+    rectangles = [(r, min(sheet.max_row, r + height - 1), c, min(sheet.max_column, c + width - 1))
+                  for r in range(1, sheet.max_row + 1, height)
+                  for c in range(1, sheet.max_column + 1, width)]
+    regions = list(sheet.merged_cells.ranges)
+    covered = set()
+    for region in regions:
+        covered.update((r, c) for r in range(region.min_row, region.max_row + 1)
+                       for c in range(region.min_col, region.max_col + 1))
+    sections = []
+    for bounds in rectangles:
+        r0, r1, c0, c1 = bounds
+        anchors = {}
+        for region in regions:
+            top, bottom = max(r0, region.min_row), min(r1, region.max_row)
+            left, right = max(c0, region.min_col), min(c1, region.max_col)
+            if top <= bottom and left <= right:
+                # A merge crossing a preview boundary is displayed as a clipped
+                # continuation with its original value on each affected page.
+                anchors[top, left] = (bottom - top + 1, right - left + 1,
+                                      sheet.cell(region.min_row, region.min_col).value)
+        rows = []
+        for row in sheet.iter_rows(min_row=r0, max_row=r1, min_col=c0, max_col=c1):
+            cells = []
+            for cell in row:
+                key = cell.row, cell.column
+                if key in anchors:
+                    rs, cs, value = anchors[key]
+                elif key in covered:
+                    continue
+                else:
+                    rs, cs, value = 1, 1, cell.value
+                if isinstance(value, datetime):
+                    value = value.strftime('%d.%m.%Y %H:%M')
+                text = escape(str(value) if value is not None else '').replace('\n', '<br>')
+                cells.append(f'<td rowspan="{rs}" colspan="{cs}">{text}</td>')
+            rows.append('<tr>' + ''.join(cells) + '</tr>')
+        html = '<table border="1" cellspacing="0" cellpadding="7">' + ''.join(rows) + '</table>'
+        sections.append(PreviewSection(_page_title(sheet.title, bounds, len(rectangles) > 1), html))
+    return sections
+
+
 def read_spreadsheet(path: Path) -> list[PreviewSection]:
     check_file(path)
     if path.suffix.lower() == '.csv':
@@ -115,11 +203,20 @@ def read_spreadsheet(path: Path) -> list[PreviewSection]:
         try:
             dialect = csv.Sniffer().sniff(text[:8192], delimiters=';,\t|')
         except csv.Error:
-            dialect = csv.excel
-        rows = list(csv.reader(text.splitlines(), dialect))
-        if sum(len(row) for row in rows) > MAX_CELLS:
-            raise ValueError('Arkusz przekracza limit 100 000 komórek podglądu.')
-        return [PreviewSection('CSV', _table(rows))]
+            # Ragged exports may have fewer columns on later rows. Their header
+            # can still identify a separator that a whole-sample sniff rejects.
+            header = next((line for line in text[:8192].splitlines() if line.strip()), '')
+            try:
+                dialect = csv.Sniffer().sniff(header, delimiters=';,\t|')
+            except csv.Error:
+                dialect = csv.excel
+        rows, count = [], 0
+        for row in csv.reader(io.StringIO(text, newline=''), dialect):
+            count += max(1, len(row))
+            if count > MAX_CELLS:
+                raise ValueError('Arkusz przekracza limit 100 000 komórek podglądu.')
+            rows.append(row)
+        return _row_table_sections('CSV', rows)
     if path.suffix.lower() == '.xls':
         try:
             import xlrd
@@ -141,7 +238,7 @@ def read_spreadsheet(path: Path) -> list[PreviewSection]:
                             value = xlrd.xldate_as_datetime(value, workbook.datemode).strftime('%d.%m.%Y %H:%M')
                         row.append(value)
                     rows.append(row)
-                result.append(PreviewSection(sheet.name, _table(rows)))
+                result.extend(_row_table_sections(sheet.name, rows))
             return result
         finally:
             workbook.release_resources()
@@ -158,25 +255,7 @@ def read_spreadsheet(path: Path) -> list[PreviewSection]:
         for sheet in workbook.worksheets:
             if sheet.max_row * sheet.max_column > MAX_CELLS:
                 raise ValueError('Arkusz przekracza limit 100 000 komórek podglądu.')
-            spans, covered = {}, set()
-            for region in sheet.merged_cells.ranges:
-                spans[(region.min_row, region.min_col)] = (region.max_row-region.min_row+1, region.max_col-region.min_col+1)
-                covered.update((r, c) for r in range(region.min_row, region.max_row+1)
-                               for c in range(region.min_col, region.max_col+1) if (r, c) != (region.min_row, region.min_col))
-            rows = []
-            for row in sheet.iter_rows():
-                cells = []
-                for cell in row:
-                    if (cell.row, cell.column) in covered:
-                        continue
-                    rs, cs = spans.get((cell.row, cell.column), (1, 1))
-                    value = cell.value
-                    if isinstance(value, datetime):
-                        value = value.strftime('%d.%m.%Y %H:%M')
-                    text = escape(str(value) if value is not None else '').replace('\n', '<br>')
-                    cells.append(f'<td rowspan="{rs}" colspan="{cs}">{text}</td>')
-                rows.append('<tr>' + ''.join(cells) + '</tr>')
-            result.append(PreviewSection(sheet.title, '<table border="1" cellspacing="0" cellpadding="7">' + ''.join(rows) + '</table>'))
+            result.extend(_xlsx_sections(sheet))
         return result
     finally:
         workbook.close()

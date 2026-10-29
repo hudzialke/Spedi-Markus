@@ -35,7 +35,9 @@ if os.path.isdir(examples):
     datas.append((examples, "brudnopis_ot/examples"))
 
 for pkg in (
-    "PySide6",
+    # Qt's standard PyInstaller hooks collect the modules and plugins actually
+    # imported by the app. collect_all(PySide6) also bundled unused WebEngine,
+    # QML, headers and tools, adding hundreds of megabytes to a Widgets app.
     "tzdata",
     "google_auth_oauthlib",
     "ddd_analyzer",

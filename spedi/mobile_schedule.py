@@ -6,7 +6,6 @@ UTC ISO strings; week labels are calendar dates in Europe/Warsaw.
 """
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import datetime, time, timedelta, timezone
 from hashlib import sha256
 import json
@@ -48,8 +47,9 @@ def build_driver_schedule(
     cycle_known: bool, planned_return_at: str | None = None,
     departure_at: str | None = None,
 ) -> dict[str, Any]:
-    full = deepcopy(scenario)
-    view = deepcopy(full)
+    from brudnopis_ot.core.models import copy_scenario
+    full = copy_scenario(scenario)
+    view = copy_scenario(full)
     view.set_axis_monday(view.week_start)  # Same projection as 'Zmodyfikowany'.
     pending = []
     result = analyze_scenario(view, pending_debts=pending)
@@ -100,19 +100,19 @@ def build_driver_schedule(
     return payload
 
 
-def build_driver_documents(store, plans_by_profile=None) -> dict[str, dict[str, Any]]:
+def build_driver_documents(store, plans_by_profile=None, *, include_scenario=True) -> dict[str, dict[str, Any]]:
     """Export every stored profile including manual profiles and missing starts.
 
     The caller provides the store, so merely importing this module never opens
     or creates a user's database. Dispatcher driver IDs are a separate namespace.
     """
     documents = {}
-    for profile in store.list_profiles():
+    for profile in store.list_profile_summaries():
         plan = (plans_by_profile or {}).get(profile.profile_key, {})
         scenario = (store.load_template_scenario(profile.profile_key)
                     if profile.source_kind == "template"
                     else store.load_ddd_scenario(profile.profile_key, original=False))
-        documents[driver_document_id(profile.profile_key)] = build_driver_schedule(
+        document = build_driver_schedule(
             profile_key=profile.profile_key,
             display_name=profile.driver_name or profile.title,
             scenario=scenario,
@@ -120,4 +120,9 @@ def build_driver_documents(store, plans_by_profile=None) -> dict[str, dict[str, 
             planned_return_at=plan.get("planned_return_at"),
             departure_at=plan.get("departure_at"),
         )
+        if not include_scenario:
+            # The revision still covers the full scenario, but one-way phone
+            # publication should not retain every driver's full timeline.
+            document.pop('scenario')
+        documents[driver_document_id(profile.profile_key)] = document
     return documents

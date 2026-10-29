@@ -62,7 +62,8 @@ def build_daily_totals(
     for block in blocks:
         d0 = block.start.date()
         d1 = (block.end - timedelta(seconds=1)).date()
-        cur = d0
+        cur = max(d0, first)
+        d1 = min(d1, last)
         while cur <= d1:
             if cur not in by_day:
                 cur += timedelta(days=1)

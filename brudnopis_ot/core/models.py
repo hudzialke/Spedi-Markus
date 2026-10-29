@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from spedi.i18n import tr as _tr
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Literal
@@ -68,6 +68,11 @@ class Block:
     @property
     def duration_hours(self) -> float:
         return self.duration.total_seconds() / 3600.0
+
+
+def copy_scenario(scenario: Scenario) -> Scenario:
+    """Independent editable blocks; all other Scenario/Block fields are immutable."""
+    return replace(scenario, blocks=[replace(block) for block in scenario.blocks])
 
 
 @dataclass(slots=True)

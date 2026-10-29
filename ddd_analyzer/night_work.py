@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from bisect import bisect_left, bisect_right
+from itertools import accumulate
 from datetime import date, datetime, timedelta
 
 from ddd_analyzer.display_tz import (
@@ -169,12 +171,20 @@ def analyze_night_work(
     if not work_items:
         return NightWorkAnalysis(night_window=window, periods=[], violations=[])
 
+    # Index in wall time, which can move backwards at the DST transition.
+    # Prefix maximum ends retain overlapping/long intervals as candidates.
+    work_items.sort(key=lambda item: item[0])
+    starts = [item[0] for item in work_items]
+    maximum_ends = list(accumulate((item[1] for item in work_items), max))
+
     periods: list[NightWorkPeriod] = []
 
     def append_period(start: datetime, end: datetime) -> None:
         if end <= start:
             return
-        work_min, night_work_min = _period_work(start, end, work_items, window)
+        hi = bisect_left(starts, end)
+        lo = bisect_right(maximum_ends, start, 0, hi)
+        work_min, night_work_min = _period_work(start, end, work_items[lo:hi], window)
         if work_min <= 0:
             return
         night_limited = night_work_min > 0

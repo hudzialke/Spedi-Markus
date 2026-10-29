@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from contextlib import contextmanager
+from threading import local
 from datetime import date, time
 from pathlib import Path
 
@@ -39,16 +41,37 @@ def ewidentor_db_path() -> Path:
 
 class EwidentorStore:
     def __init__(self, path: Path | None = None) -> None:
+        self._connections = local()
         self.path = path or ewidentor_db_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
         self._ensure_milo_seed()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        active = getattr(self._connections, 'connection', None)
+        if active is not None:
+            yield active
+            return
         conn = sqlite3.connect(str(self.path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
+    def transaction(self):
+        """Group store writes atomically; each thread owns its connection."""
+        with self._connect() as conn:
+            previous = getattr(self._connections, 'connection', None)
+            self._connections.connection = conn
+            try:
+                yield conn
+            finally:
+                self._connections.connection = previous
 
     def _init_schema(self) -> None:
         with self._connect() as conn:

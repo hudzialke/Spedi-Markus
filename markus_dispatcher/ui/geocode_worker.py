@@ -44,6 +44,6 @@ def start_geocode(parent: QObject, side: str, address: str) -> QThread:
     worker.finished.connect(thread.quit)
     worker.failed.connect(thread.quit)
     thread.finished.connect(worker.deleteLater)
-    # Nie deleteLater na QThread — JobPane trzyma _load_thread / _unload_thread.
+    # JobPane clears its reference and deletes the thread when finished.
     thread._worker = worker  # type: ignore[attr-defined]
     return thread

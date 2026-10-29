@@ -133,6 +133,7 @@ class MainWindow(QMainWindow):
         self._vu: DddAnalysis | None = None
         self._paired: PairedAnalysis | None = None
         self._active: DddAnalysis | None = None
+        self._night_cache = None
         self._zone: DisplayZone = normalize_zone(
             QSettings(SETTINGS_ORG, SETTINGS_APP).value(SETTINGS_KEY, DEFAULT_ZONE)
         )
@@ -295,7 +296,9 @@ class MainWindow(QMainWindow):
 
     def _load_file(self, path: str, expected_kind: DddFileKind | None = None) -> None:
         try:
-            analysis = parse_ddd_file(path)
+            from spedi.background import run_background
+            analysis = run_background(self, _tr('Odczytywanie pliku DDD…'),
+                                      lambda task: parse_ddd_file(path))
         except Exception as exc:
             QMessageBox.critical(self, _tr("Blad odczytu"), str(exc))
             return
@@ -391,6 +394,7 @@ class MainWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         dialog.exec()
+        dialog.deleteLater()
 
     def _show_night_dialog(self) -> None:
         active = self._active
@@ -406,18 +410,25 @@ class MainWindow(QMainWindow):
         dialog.resize(820, 420)
         layout = QVBoxLayout(dialog)
         panel = NightWorkPanel()
-        panel.set_analysis(analyze_night_work(active.segments, zone=self._zone))
+        panel.set_analysis(self._night_analysis())
         layout.addWidget(panel)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept)
         layout.addWidget(buttons)
         dialog.exec()
+        dialog.deleteLater()
 
     def _refresh_view(self) -> None:
         self._active = self._choose_active_analysis()
         self._update_header()
         self._update_vehicles()
         self._update_activity_view()
+
+    def _night_analysis(self):
+        if self._night_cache is None or self._night_cache[0] is not self._active or self._night_cache[1] != self._zone:
+            self._night_cache = (self._active, self._zone,
+                                 analyze_night_work(self._active.segments, zone=self._zone))
+        return self._night_cache[2]
 
     def _choose_active_analysis(self) -> DddAnalysis | None:
         prefer = self.source_combo.currentData()
@@ -520,7 +531,7 @@ class MainWindow(QMainWindow):
             self.summary.table.selectRow(self.summary.table.rowCount() - 1)
         self.timeline.set_day(anchor, active.segments, zone=self._zone, open_activity=active.open_activity)
 
-        night_analysis = analyze_night_work(active.segments, zone=self._zone)
+        night_analysis = self._night_analysis()
 
         source_name = "karty" if active.file_kind == DddFileKind.CARD else "VU"
         status = (

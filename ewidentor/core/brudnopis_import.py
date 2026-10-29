@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -85,7 +86,7 @@ def resolve_card_number(
 def list_brudnopis_profiles(db_path: Path) -> list[BrudnopisProfile]:
     if not db_path.is_file():
         return []
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         conn.row_factory = sqlite3.Row
         cols = {
             r[1]
@@ -137,25 +138,37 @@ def load_month_segments(
 ) -> list[RawSegment]:
     if not db_path.is_file():
         return []
+    start = date(year, month, 1)
+    end = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
     prefix = f"{year:04d}-{month:02d}-"
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT day, activity, start_minute, end_minute FROM segments "
-            "WHERE profile_key = ? "
-            "ORDER BY day, start_minute, end_minute",
-            (profile_key,),
-        ).fetchall()
         confirmations = []
         pending = None
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='ddd_activity_ends'").fetchone():
-            confirmations = conn.execute('SELECT start, activity, end FROM ddd_activity_ends WHERE profile_key=?', (profile_key,)).fetchall()
+            confirmations = [row for row in conn.execute(
+                'SELECT start, activity, end FROM ddd_activity_ends WHERE profile_key=?', (profile_key,))
+                if datetime.fromisoformat(row['start']).date() < end
+                and datetime.fromisoformat(row['end']) > datetime.combine(start, datetime.min.time())]
             import json
             from ddd_analyzer.models import ActivityType, OpenActivity
             data = conn.execute('SELECT open_activity_json FROM profiles WHERE profile_key=?', (profile_key,)).fetchone()
             if data and data[0]:
                 record = json.loads(data[0])
                 pending = OpenActivity(ActivityType(record['activity']), datetime.fromisoformat(record['start']))
+        query = "SELECT day, activity, start_minute, end_minute FROM segments WHERE profile_key = ? "
+        parameters = [profile_key]
+        context_start = min([start, *[datetime.fromisoformat(row['start']).date() for row in confirmations]])
+        unusual_bounds = confirmations and conn.execute(
+            'SELECT 1 FROM segments WHERE profile_key=? AND (start_minute < 0 OR end_minute > 1440) LIMIT 1',
+            (profile_key,)).fetchone()
+        if not unusual_bounds:
+            # Include the source day of a cross-month confirmation, so raw
+            # evidence still takes priority. Out-of-range legacy rows retain
+            # the full-history fallback because their bounds can cross days.
+            query += "AND day >= ? AND day < ? "
+            parameters.extend((context_start.isoformat(), end.isoformat()))
+        rows = conn.execute(query + "ORDER BY day, start_minute, end_minute", parameters).fetchall()
     segments = [
         RawSegment(
             day=date.fromisoformat(r["day"]),
@@ -166,7 +179,9 @@ def load_month_segments(
         for r in rows
     ]
     from brudnopis_ot.core.activity_ends import confirmed_segments
-    segments.extend(confirmed_segments(segments, confirmations, pending))
+    segments.extend(confirmed_segments(segments, confirmations, pending,
+        range_start=datetime.combine(start, datetime.min.time()),
+        range_end=datetime.combine(end, datetime.min.time())))
     return sorted((s for s in segments if s.day.isoformat().startswith(prefix)), key=lambda s: (s.day, s.start_minute, s.end_minute))
 
 
@@ -186,7 +201,7 @@ def load_month_border_crossings(
 
     lo = (start - timedelta(days=2)).isoformat()
     hi = (end + timedelta(days=2)).isoformat()
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
@@ -252,7 +267,7 @@ def load_month_places(
 
     lo = (start - timedelta(days=2)).isoformat()
     hi = (end + timedelta(days=2)).isoformat()
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(

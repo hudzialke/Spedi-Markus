@@ -3,6 +3,7 @@ from __future__ import annotations
 from spedi.i18n import tr as _tr
 
 from datetime import datetime, timedelta
+import weakref
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -41,7 +42,10 @@ class DetailTimeline(QWidget):
 
     def __init__(self, grid, ranges, parent=None):
         super().__init__(parent)
-        self.grid, self.ranges = grid, ranges
+        # The grid owns this dialog through Qt's parent hierarchy. A strong
+        # reference back to that parent can destroy it reentrantly while the
+        # deferred deletion of the detail widget is still in progress.
+        self.grid, self.ranges = weakref.proxy(grid), ranges
         self.hits = []
         self.selected_id = None
         self.setMinimumSize(620, max(110, 110 * len(ranges)))

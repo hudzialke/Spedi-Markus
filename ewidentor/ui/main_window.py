@@ -97,7 +97,6 @@ from ewidentor.core.models import (
 from ewidentor.core.month_card import build_month_card, format_clock_local, format_minutes
 from ewidentor.core.paths import default_brudnopis_db, driver_reports_dir, reports_dir
 from ewidentor.core.payroll import compute_payroll
-from ewidentor.core.report_pdf import default_report_path, export_month_pdf
 from ewidentor.core.store import EwidentorStore
 from ewidentor.core.virtual_diet import compute_virtual_diet
 from ewidentor.ui.day_editor_dialog import DayEditorDialog
@@ -745,7 +744,8 @@ class MainWindow(QMainWindow):
                 f"Nie znaleziono bazy:\n{db}{_tr('\n\nUstaw ścieżkę (toolbar).')}",
             )
             return
-        result = sync_drivers_from_brudnopis(self.store, db, only_card=True)
+        with self.store.transaction():
+            result = sync_drivers_from_brudnopis(self.store, db, only_card=True)
         self.reload_drivers()
         details = "\n".join(result.messages[:12])
         if len(result.messages) > 12:
@@ -779,12 +779,21 @@ class MainWindow(QMainWindow):
             return
         created = updated = failed = 0
         notes: list[str] = []
-        for path in paths:
-            try:
-                ident = read_ddd_identity(path)
-            except DddIdentityError as exc:
+        from spedi.background import run_background
+        def read_files(task):
+            identities = []
+            for index, path in enumerate(paths):
+                try:
+                    identities.append((path, read_ddd_identity(path), None))
+                except DddIdentityError as exc:
+                    identities.append((path, None, str(exc)))
+                task.progress.emit(index + 1, len(paths))
+            return identities
+        identities = run_background(self, _tr('Importowanie plików DDD…'), read_files)
+        for path, ident, error in identities:
+            if error is not None:
                 failed += 1
-                notes.append(f"{Path(path).name}: {exc}")
+                notes.append(f"{Path(path).name}: {error}")
                 continue
             if ident.source_kind != "card" or not ident.card_number:
                 failed += 1
@@ -959,12 +968,14 @@ class MainWindow(QMainWindow):
             self._dispatcher_legs = load_dispatcher_legs_for_driver(
                 driver.full_name, year, month
             )
-            self._auto_fill_milo_from_borders(did, segments, crossings, places)
+            derived = derive_country_minutes(segments, crossings, places)
+            self._auto_fill_milo_from_borders(did, segments, crossings, places, derived=derived)
             self._milo_stays = self._ordered_milo_stays(
                 self.store.list_milo_stays(did, year, month),
                 segments,
                 crossings,
                 places,
+                derived=derived,
             )
             self._fill_days()
             self._fill_calendar()
@@ -1168,19 +1179,21 @@ class MainWindow(QMainWindow):
         self._comp_entries = self.store.list_comp_entries(did, year, month)
 
     def _ordered_milo_stays(
-        self, stays, segments, crossings, places
+        self, stays, segments, crossings, places, *, derived=None
     ):
         """Sort MiLo rows by day, then by first presence from places/crossings."""
-        derived = derive_country_minutes(segments, crossings, places)
+        if derived is None:
+            derived = derive_country_minutes(segments, crossings, places)
         return sorted_milo_stays(
             stays, first_seen=presence_first_seen_map(derived)
         )
 
     def _auto_fill_milo_from_borders(
-        self, driver_id: int, segments, crossings, places=None
+        self, driver_id: int, segments, crossings, places=None, *, derived=None
     ) -> None:
         places = places or []
-        derived = derive_country_minutes(segments, crossings, places)
+        if derived is None:
+            derived = derive_country_minutes(segments, crossings, places)
         if places:
             self._countries_by_day = country_labels_from_places(places)
         else:
@@ -1204,6 +1217,7 @@ class MainWindow(QMainWindow):
             if any(getattr(c, "source", "") == "gnss" for c in crossings)
             else ("auto z border_crossings" if crossings else "auto z places (DDD)")
         )
+        additions = []
         for item in derived:
             key = (item.day, item.country_code.upper())
             if key in have:
@@ -1218,7 +1232,7 @@ class MainWindow(QMainWindow):
             if disp is not None:
                 op = disp.op
                 note = f"{source_note} · {disp.reason}"
-            self.store.upsert_milo_stay(
+            additions.append(
                 MiloStay(
                     id=None,
                     driver_id=driver_id,
@@ -1229,6 +1243,10 @@ class MainWindow(QMainWindow):
                     note=note,
                 )
             )
+        if additions:
+            with self.store.transaction():
+                for stay in additions:
+                    self.store.upsert_milo_stay(stay)
 
     def _fill_comp(self) -> None:
         self.comp_table.setRowCount(len(self._comp_entries))
@@ -1604,6 +1622,7 @@ class MainWindow(QMainWindow):
         self.export_pdf()
 
     def export_pdf(self) -> None:
+        from ewidentor.core.report_pdf import default_report_path, export_month_pdf
         if self._card is None:
             self.load_month(silent=True)
         if self._card is None:
@@ -1646,26 +1665,24 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        out = export_month_pdf(
-            self._card,
-            Path(path),
-            attachments=atts,
-            payroll=pay,
-            comp_entries=comps,
-            sunday_unreturned_min=sunday_u,
-            milo_stays=stays,
-            milo_result=milo,
-            milo_topup_pln=milo.topup_total_pln,
-            virtual_diet=diet,
-            zone=self._zone,
-        )
+        from copy import deepcopy
+        from spedi.background import run_background
+        card, zone = deepcopy(self._card), self._zone
+        try:
+            out = run_background(self, _tr('Tworzenie raportu PDF…'), lambda task: export_month_pdf(
+                card, Path(path), attachments=atts, payroll=pay, comp_entries=comps,
+                sunday_unreturned_min=sunday_u, milo_stays=stays, milo_result=milo,
+                milo_topup_pln=milo.topup_total_pln, virtual_diet=diet, zone=zone))
+        except Exception as exc:
+            QMessageBox.critical(self, 'PDF', _tr('Nie udało się wygenerować raportu:\n') + str(exc))
+            return
         self.store.save_month_closure(
             did,
-            self._card.year,
-            self._card.month,
-            {"pdf": str(out), "driver": self._card.driver.full_name},
+            card.year,
+            card.month,
+            {"pdf": str(out), "driver": card.driver.full_name},
         )
-        self._pdf_done_for = (did, self._card.year, self._card.month)
+        self._pdf_done_for = (did, card.year, card.month)
         self._update_checklist(
             segments_count=len(self._segments),
             pay_work=pay.work_min,

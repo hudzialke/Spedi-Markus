@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from contextlib import contextmanager
 import shutil
 import sqlite3
@@ -14,6 +15,7 @@ from brudnopis_ot.core.ddd_file_loader import (
     PlaceRecord,
     SourceKind,
     _normalize_plate,
+    _clean_text,
     merge_load_into_profile,
 )
 from brudnopis_ot.core.hudonizator_reader import RawSegment
@@ -23,6 +25,27 @@ from brudnopis_ot.core.models import Scenario
 
 def ddd_db_path() -> Path:
     return data_dir() / "ddd_profiles.sqlite"
+
+
+@dataclass(frozen=True, slots=True)
+class DddProfileSummary:
+    """Picker metadata; deliberately contains no activity history or GNSS points."""
+    profile_key: str
+    source_kind: str
+    driver_name: str
+    title: str
+    card_number: str | None
+    vehicle_plate: str | None
+    date_from: date | None
+    date_to: date | None
+
+    @property
+    def profile_label(self) -> str:
+        if self.source_kind == 'template':
+            return f'{self.driver_name} · Ręczny profil'
+        if self.source_kind == 'vu' and not _clean_text(self.card_number):
+            return f"VU {self.vehicle_plate or 'brak rejestracji'}"
+        return f"{self.driver_name} ({self.card_number or 'brak karty'})"
 
 
 class DddProfileStore:
@@ -258,6 +281,19 @@ class DddProfileStore:
                 "SELECT profile_key FROM profiles ORDER BY source_kind, driver_name, vehicle_plate"
             ).fetchall()
             return [self._load_row(conn, r["profile_key"]) for r in rows]
+
+    def list_profile_summaries(self) -> list[DddProfileSummary]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                'SELECT profile_key, source_kind, driver_name, title, card_number, vehicle_plate, '
+                'date_from, date_to FROM profiles ORDER BY source_kind, driver_name, vehicle_plate'
+            ).fetchall()
+        return [DddProfileSummary(
+            row['profile_key'], row['source_kind'], row['driver_name'], row['title'],
+            row['card_number'], row['vehicle_plate'],
+            date.fromisoformat(row['date_from']) if row['date_from'] else None,
+            date.fromisoformat(row['date_to']) if row['date_to'] else None,
+        ) for row in rows]
 
     def get(self, profile_key: str) -> DddLoadResult | None:
         with self._connect() as conn:

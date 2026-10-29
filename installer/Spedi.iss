@@ -3,7 +3,7 @@
 
 #define MyAppName "Spedi"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.2"
+  #define MyAppVersion "0.2.3"
 #endif
 #define MyAppPublisher "Patryk Prośniak (hudzialke)"
 #define MyAppExeName "Spedi.exe"

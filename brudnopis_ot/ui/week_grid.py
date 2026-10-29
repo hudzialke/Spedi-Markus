@@ -47,6 +47,10 @@ class WeekGridWidget(QWidget):
         self._row_height = 78.0
         self._header_height = 28.0
         self._hit_blocks: list[tuple[str, QRectF]] = []
+        self._week_hits = {}
+        self._blocks_by_id = {}
+        self._display_times = {}
+        self._layout_dirty = True
         self.editable = True
         self._data_issues = []
         self._lens_mode = False
@@ -80,7 +84,7 @@ class WeekGridWidget(QWidget):
         warning = ''
         for identity, rect in reversed(self._hit_blocks):
             if rect.contains(event.position()):
-                block = self._scenario.get_block(identity) if self._scenario else None
+                block = self._blocks_by_id.get(identity)
                 warning = issue_text(block, self._data_issues) if block else ''
                 break
         self.setToolTip(warning)
@@ -94,32 +98,71 @@ class WeekGridWidget(QWidget):
             self.set_lens_mode(False)
             if ranges:
                 dialog = TimelineLensDialog(self, ranges)
-                if dialog.exec() and dialog.selected_id:
-                    if dialog.selected_action == 'anchor':
-                        self.set_week1_anchor.emit(dialog.selected_id)
-                    elif dialog.selected_action == 'edit':
-                        self.block_clicked.emit(dialog.selected_id)
-                    else:
-                        self.set_selected_ids({dialog.selected_id})
+                try:
+                    if dialog.exec() and dialog.selected_id:
+                        if dialog.selected_action == 'anchor':
+                            self.set_week1_anchor.emit(dialog.selected_id)
+                        elif dialog.selected_action == 'edit':
+                            self.block_clicked.emit(dialog.selected_id)
+                        else:
+                            self.set_selected_ids({dialog.selected_id})
+                finally:
+                    dialog.deleteLater()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
     def set_display_zone(self, zone: DisplayZone) -> None:
+        if self._zone == zone:
+            return
         self._zone = zone
+        self._invalidate_layout()
         self.update()
 
     def _disp(self, instant: datetime) -> datetime:
-        return utc_naive_to_zone(instant, self._zone)
+        key = (instant, instant.fold)
+        if key not in self._display_times:
+            self._display_times[key] = utc_naive_to_zone(instant, self._zone)
+        return self._display_times[key]
+
+    def _invalidate_layout(self) -> None:
+        self._layout_dirty = True
+        self._display_times.clear()
+        self._week_hits.clear()
+        self._hit_blocks.clear()
+
+    def _group_by_week(self, items, bounds):
+        groups = [[] for _ in range(self._scenario.weeks)]
+        for item in items:
+            start, end = bounds(item)
+            first = max(0, self._week_of(self._disp(start)))
+            last = min(len(groups) - 1, self._week_of(self._disp(end)))
+            for week in range(first, last + 1):
+                groups[week].append(item)
+        return groups
+
+    def _prepare_layout(self):
+        self._blocks_by_id = {block.id: block for block in self._scenario.blocks}
+        self._week_blocks = self._group_by_week(self._scenario.sorted_blocks(), lambda b: (b.start, b.end))
+        result = self._result
+        self._week_rests = self._group_by_week(result.weekly_rests if result else (), lambda r: (r.start, r.end))
+        self._week_findings = self._group_by_week(
+            [f for f in result.findings if f.severity == 'violation' and f.underline_range] if result else (),
+            lambda f: (f.underline_range.start, f.underline_range.end))
+        self._week_six = self._group_by_week(result.six_day_windows if result else (), lambda w: (w.start, w.end))
+        self._week_comp = self._group_by_week(result.compensation_windows if result else (), lambda w: (w.start, w.start))
+        self._layout_dirty = False
 
     def set_scenario(self, scenario: Scenario | None) -> None:
         self.set_lens_mode(False)
         self._scenario = scenario
+        self._invalidate_layout()
         self._update_size()
         self.update()
 
     def set_validation(self, result: ValidationResult | None) -> None:
         self._result = result
+        self._invalidate_layout()
         self.update()
 
     def set_data_issues(self, issues) -> None:
@@ -161,6 +204,8 @@ class WeekGridWidget(QWidget):
         return 2.0 + (self._hours_per_day_px - 14.0) * (8.0 / 50.0)
 
     def _update_size(self) -> None:
+        self._week_hits.clear()
+        self._hit_blocks.clear()
         if self._scenario is None:
             self.setMinimumWidth(800)
             return
@@ -268,16 +313,17 @@ class WeekGridWidget(QWidget):
         return candidates[descriptions.index(selected)].utc if ok else None
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._hit_blocks.clear()
 
         painter.fillRect(self.rect(), QColor("#e9eef2"))
         if self._scenario is None:
             painter.setPen(QColor("#5a6672"))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, _tr("Brak scenariusza"))
             return
+
+        if self._layout_dirty:
+            self._prepare_layout()
 
         px_h = self._px_per_hour_effective()
         content_w = 7 * 24 * px_h
@@ -293,6 +339,12 @@ class WeekGridWidget(QWidget):
 
         for week_i in range(self._scenario.weeks):
             top = self._header_height + week_i * self._row_height
+            # Labels and deadline markers extend outside their activity row.
+            # Keep hit rectangles for rows unaffected by a partial repaint.
+            if top + self._row_height + 24 < event.rect().top() or top - 24 > event.rect().bottom():
+                continue
+            week_hits = []
+            self._week_hits[week_i] = week_hits
             monday = self._scenario.week_start + timedelta(days=7 * week_i)
             # Label
             painter.setPen(QColor("#111827"))
@@ -354,7 +406,7 @@ class WeekGridWidget(QWidget):
             # Blocks intersecting this week (positions in display zone)
             week_start = datetime.combine(monday, datetime.min.time())
             week_end = week_start + timedelta(days=7)
-            for block in self._scenario.sorted_blocks():
+            for block in self._week_blocks[week_i]:
                 bs = self._disp(block.start)
                 be = self._disp(block.end)
                 if be <= week_start or bs >= week_end:
@@ -390,7 +442,7 @@ class WeekGridWidget(QWidget):
                         format_duration_hm(block.duration_hours),
                     )
 
-                self._hit_blocks.append((block.id, rect))
+                week_hits.append((block.id, rect))
 
                 # Country flag at start
                 if block.country_start and abs((seg_start - bs).total_seconds()) < 1:
@@ -407,7 +459,7 @@ class WeekGridWidget(QWidget):
 
             # Weekly rest labels + compensation green strip (also on OD ≥9h)
             if self._result is not None:
-                for wr in self._result.weekly_rests:
+                for wr in self._week_rests[week_i]:
                     wr_s, wr_e = self._disp(wr.start), self._disp(wr.end)
                     if wr_e <= week_start or wr_s >= week_end:
                         continue
@@ -477,7 +529,7 @@ class WeekGridWidget(QWidget):
                     )
 
                 # Violation underlines
-                for finding in self._result.findings:
+                for finding in self._week_findings[week_i]:
                     if finding.severity != "violation" or finding.underline_range is None:
                         continue
                     ur = finding.underline_range
@@ -494,7 +546,7 @@ class WeekGridWidget(QWidget):
 
                 # Max 6x24h brackets (green) for six_day_windows intersecting week
                 painter.setPen(QPen(QColor("#16A34A"), 2))
-                for window in self._result.six_day_windows:
+                for window in self._week_six[week_i]:
                     win_s, win_e = self._disp(window.start), self._disp(window.end)
                     if win_e <= week_start or win_s >= week_end:
                         continue
@@ -545,7 +597,7 @@ class WeekGridWidget(QWidget):
                 # Po parze 2× skrócony: rekompensaty muszą zakończyć się przed
                 # granicą 6×24h. Pomarańczowa linia pokazuje ostatni moment,
                 # w którym kierowca może zakończyć jazdę i zacząć cały blok.
-                for window in self._result.compensation_windows:
+                for window in self._week_comp[week_i]:
                     latest_start = self._disp(window.start)
                     regular_start = self._disp(window.end)
                     if not (week_start <= latest_start < week_end):
@@ -584,9 +636,10 @@ class WeekGridWidget(QWidget):
                         )
 
         # Outer border of timeline
+        self._hit_blocks = [hit for week in sorted(self._week_hits) for hit in self._week_hits[week]]
         from brudnopis_ot.ui.data_issues import issue_text, draw_issue_badge
-        for identity, rect in self._hit_blocks:
-            block = self._scenario.get_block(identity)
+        for identity, rect in self._hit_blocks if self._data_issues else ():
+            block = self._blocks_by_id.get(identity)
             if block and issue_text(block, self._data_issues):
                 draw_issue_badge(painter, rect)
         # An invalid record may occupy a gap rather than a known activity.

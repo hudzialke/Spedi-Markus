@@ -23,7 +23,7 @@ def sync_with_client(store, user):
     from google.cloud import firestore
     result = MobileSyncResult()
     schedules = user.collection("driver_schedules")
-    local = build_driver_documents(store)  # Read only; do not load mobile plans.
+    local = build_driver_documents(store, include_scenario=False)  # Read only; no mobile plans.
     remote = {snap.id: snap.to_dict() for snap in schedules.stream(timeout=30)}
     for identity, source in local.items():
         published = published_document(source)

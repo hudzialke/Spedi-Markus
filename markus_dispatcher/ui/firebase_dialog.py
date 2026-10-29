@@ -108,6 +108,8 @@ class FirebaseSyncDialog(QDialog):
             self.log.append(setup.missing_reason)
 
     def _run_sync(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
         firebase_sync.save_uid(self.uid_edit.text())
         setup = firebase_sync.load_setup()
         if not setup.configured:
@@ -115,10 +117,28 @@ class FirebaseSyncDialog(QDialog):
             return
         self.sync_btn.setEnabled(False)
         self.log.setPlainText(_tr("Synchronizacja…"))
-        self._worker = _SyncWorker()
+        self._worker = _SyncWorker(self)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.failed.connect(self._on_fail)
+        self._worker.finished.connect(self._sync_finished)
         self._worker.start()
+
+    def _sync_finished(self):
+        worker, self._worker = self._worker, None
+        worker.deleteLater()
+
+    def reject(self):
+        if self._worker is not None and self._worker.isRunning():
+            self.log.append(_tr('Poczekaj na zakończenie synchronizacji.'))
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._worker is not None and self._worker.isRunning():
+            event.ignore()
+            self.log.append(_tr('Poczekaj na zakończenie synchronizacji.'))
+        else:
+            super().closeEvent(event)
 
     def _on_done(self, result: object) -> None:
         self.sync_btn.setEnabled(True)
