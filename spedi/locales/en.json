@@ -768,5 +768,12 @@
   "Poczekaj na zakończenie synchronizacji.": "Wait for synchronization to finish.",
   "Eksportowanie historii zleceń…": "Exporting order history…",
   "Tworzenie raportu PDF…": "Generating the PDF report…",
-  "Nie można wczytać profilu": "Unable to load the profile"
+  "Nie można wczytać profilu": "Unable to load the profile",
+  "Prom/kolej": "Ferry/train",
+  "■ Prom/kolej (warunek DDD)": "■ Ferry/train (DDD condition)",
+  "Warunki szczególne DDD": "DDD specific conditions",
+  "Prom/kolej — początek": "Ferry/train — begin",
+  "Prom/kolej — koniec": "Ferry/train — end",
+  "Poza zakresem — początek": "Out of scope — begin",
+  "Poza zakresem — koniec": "Out of scope — end"
 }

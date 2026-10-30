@@ -7,6 +7,7 @@ from typing import Literal
 
 from brudnopis_ot.core.hudonizator_reader import RawSegment
 from ddd_analyzer.models import OpenActivity
+from ddd_analyzer.specific_conditions import SpecificCondition, merge_conditions
 
 SourceKind = Literal["card", "vu", "template"]
 
@@ -71,6 +72,7 @@ class DddLoadResult:
 
     template_id: str | None = None
     open_activity: OpenActivity | None = None
+    specific_conditions: tuple[SpecificCondition, ...] = ()
 
     @property
     def filename(self) -> str:
@@ -350,6 +352,7 @@ def load_ddd_file(path: str | Path, *, _analysis=None) -> DddLoadResult:
         places=places,
         gnss_points=gnss_points,
         open_activity=analysis.open_activity,
+        specific_conditions=analysis.specific_conditions,
     )
 
 
@@ -365,7 +368,9 @@ def _merge_parts(parts: list[DddLoadResult]) -> DddLoadResult:
     places: tuple[PlaceRecord, ...] = ()
     gnss_points: tuple[GnssPointRecord, ...] = ()
     open_activity = None
+    specific_conditions = ()
     for part in ordered:
+        specific_conditions = merge_conditions(specific_conditions, part.specific_conditions)
         segments = replace_range(segments, part.segments, part.date_from, part.date_to)
         open_activity = merge_open_activity(open_activity, part.open_activity, segments)
         crossings = replace_crossings_range(
@@ -415,6 +420,7 @@ def _merge_parts(parts: list[DddLoadResult]) -> DddLoadResult:
         places=places,
         gnss_points=gnss_points,
         open_activity=open_activity,
+        specific_conditions=specific_conditions,
     )
 
 
@@ -591,6 +597,7 @@ def merge_load_into_profile(
         existing,
         segments=segments,
         open_activity=merge_open_activity(existing.open_activity, incoming.open_activity, segments),
+        specific_conditions=merge_conditions(existing.specific_conditions, incoming.specific_conditions),
         border_crossings=crossings,
         places=places,
         gnss_points=gnss_points,

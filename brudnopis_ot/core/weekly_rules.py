@@ -262,6 +262,14 @@ def analyze_scenario(
     compensation_events: list[CompensationEvent] | None = None,
 ) -> ValidationResult:
     findings: list[Finding] = []
+    from ddd_analyzer.specific_conditions import ferry_intervals, FERRY_REVIEW
+    for interval in ferry_intervals(scenario.specific_conditions):
+        if not interval.overlaps(scenario.range_start, scenario.range_end):
+            continue
+        related = tuple(b.id for b in scenario.blocks if interval.overlaps(b.start, b.end))
+        findings.append(Finding(severity='info', code='FERRY_TRAIN_REVIEW',
+            message_pl=f'{format_dt(interval.start, zone)} · {FERRY_REVIEW}',
+            related_block_ids=related))
     hints: list[str] = []
     compensation_windows: list[TimeRange] = []
     weekly_all = build_weekly_rests(scenario)

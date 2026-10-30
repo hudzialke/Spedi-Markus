@@ -164,6 +164,33 @@ def run(report_path: str) -> int:
             assert sum(s.end_minute-s.start_minute for s in rows if s.activity == 'availability') == 244
             assert not any(b.kind == ActivityKind.AVAILABILITY for b in store.load_ddd_scenario(profile.profile_key, original=True).blocks)
             report['checks'].append('ddd-open-activity-and-confirmed-end')
+            from ddd_analyzer.specific_conditions import SpecificCondition, ferry_intervals
+            from ddd_analyzer.ui.timeline_widget import TimelineWidget
+            ferry_start = datetime(2026, 10, 23, 16, 27, 25)
+            ferry_end = datetime(2026, 10, 23, 16, 49, 59)
+            ferry_raw = {'driver': {'card_number': '1234567890123456'},
+                'activities': [{'date': '2026-10-23', 'changes': [
+                    {'time': '16:22', 'activity': 'REST'},
+                    {'time': '16:49', 'activity': 'DRIVE'},
+                    {'time': '16:50', 'activity': 'REST'}]}],
+                'specific_conditions': [
+                    {'timestamp': '2026-10-23T16:27:25Z', 'type_code': 3},
+                    {'timestamp': '2026-10-23T16:49:59Z', 'type_code': 4}]}
+            ferry_card = parse_tacho_result(ferry_raw, str(card_path), DddFileKind.CARD)
+            ferry_profile = load_ddd_file(card_path, _analysis=ferry_card)
+            store.upsert(ferry_profile)
+            assert store.get(ferry_profile.profile_key).specific_conditions == (
+                SpecificCondition(ferry_start, 3), SpecificCondition(ferry_end, 4))
+            ferry_scenario = store.load_ddd_scenario(ferry_profile.profile_key)
+            assert ferry_intervals(ferry_scenario.specific_conditions)[0].end == ferry_end
+            timeline = TimelineWidget()
+            timeline.set_day(date(2026, 10, 23), ferry_card.segments,
+                             specific_conditions=ferry_card.specific_conditions)
+            assert timeline.conditions_table.item(0, 0).text().endswith('18:27:25')
+            assert 'Prom/kolej' in timeline.blocks_table.item(0, 2).text()
+            assert ferry_card.daily_summaries[0].rest_min == 27
+            timeline.close()
+            report['checks'].append('ddd-ferry-conditions-persistence-and-ui')
             # Exercise constructors too: Qt's hooks must include every plugin
             # required by lazily created pages, rather than just their imports.
             from spedi.shell import ShellWindow

@@ -351,7 +351,8 @@ class MainWindow(QMainWindow):
             date_range=(profile.date_from, profile.date_to), filename=profile.filename,
             border_crossings=[BorderCrossing(c.occurred_at, c.country_left, c.country_entered, c.odometer_km, source=c.source) for c in profile.border_crossings],
             places=[PlaceRecord(p.occurred_at, p.entry_type, p.country_code, p.odometer_km) for p in profile.places],
-            gnss_points=[GnssPoint(p.occurred_at, p.latitude, p.longitude, p.odometer_km) for p in profile.gnss_points])
+            gnss_points=[GnssPoint(p.occurred_at, p.latitude, p.longitude, p.odometer_km) for p in profile.gnss_points],
+            specific_conditions=profile.specific_conditions)
         analysis.open_activity = profile.open_activity
         if analysis.open_activity and not any(s.day == analysis.open_activity.start.date() for s in analysis.daily_summaries):
             from ddd_analyzer.models import DailySummary
@@ -389,6 +390,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         panel = RestPanel()
         panel.set_summary(analyze_rests(active.segments), zone=self._zone)
+        panel.set_conditions(active.specific_conditions)
         layout.addWidget(panel)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)
@@ -529,7 +531,8 @@ class MainWindow(QMainWindow):
         self.summary.set_summaries(active.daily_summaries, week)
         if self.summary.table.rowCount() > 0:
             self.summary.table.selectRow(self.summary.table.rowCount() - 1)
-        self.timeline.set_day(anchor, active.segments, zone=self._zone, open_activity=active.open_activity)
+        self.timeline.set_day(anchor, active.segments, zone=self._zone, open_activity=active.open_activity,
+                              specific_conditions=active.specific_conditions)
 
         night_analysis = self._night_analysis()
 
@@ -566,4 +569,5 @@ class MainWindow(QMainWindow):
             return
         day = self.summary.selected_day()
         if day:
-            self.timeline.set_day(day, self._active.segments, zone=self._zone, open_activity=self._active.open_activity)
+            self.timeline.set_day(day, self._active.segments, zone=self._zone, open_activity=self._active.open_activity,
+                                  specific_conditions=self._active.specific_conditions)

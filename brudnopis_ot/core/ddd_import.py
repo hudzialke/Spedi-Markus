@@ -43,6 +43,8 @@ def _snapshot(profile):
 def _canonical_snapshot(value):
     data = json.loads(value)
     data.pop('open_activity', None)
+    # Older ledgers predate condition metadata. Recovery never edits activities.
+    data.pop('specific_conditions', None)
     # Source collections describe evidence, not UI ordering. Old ledgers could
     # store parser order while SQLite returns chronological order.
     for key, items in data.items():
@@ -194,6 +196,8 @@ def import_files(store, paths, *, loader=load_ddd_profiles, cancelled=None, prog
                             raise DddLoadError('Brak profilu dla zarejestrowanego źródła DDD.')
                         pending = merge_open_activity(old.open_activity, part.open_activity, old.segments)
                         store.set_open_activity(key, pending)
+                        from ddd_analyzer.specific_conditions import merge_conditions
+                        store.set_specific_conditions(key, merge_conditions(old.specific_conditions, part.specific_conditions), checked=False)
                         saved_profiles[key] = store.get(key)
                         continue
                     baseline = conn.execute("SELECT * FROM ddd_baselines WHERE profile_key=?", (key,)).fetchone()
@@ -280,6 +284,40 @@ def recover_open_activity(store, key, *, loader=load_ddd_profiles):
                 store.set_open_activity(key, pending)
                 return store.get(key)
     return old
+
+
+def recover_specific_conditions(store, key, *, loader=load_ddd_profiles):
+    """Add missing condition evidence only, preserving history and corrections.
+
+    Only a complete scan of hash-verified source archives is cached. Failed or
+    unavailable sources are retried on a subsequent profile load.
+    """
+    from ddd_analyzer.specific_conditions import merge_conditions
+    old = store.get(key)
+    if old is None or old.source_kind == 'template':
+        return old
+    with store._connect() as conn:
+        if conn.execute('SELECT specific_conditions_checked FROM profiles WHERE profile_key=?', (key,)).fetchone()[0]:
+            return old
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='ddd_sources'").fetchone():
+            return old
+        rows = conn.execute('SELECT * FROM ddd_sources WHERE profile_key=?', (key,)).fetchall()
+        conditions, complete = old.specific_conditions, bool(rows)
+        for row in rows:
+            path = Path(row['stored_path'])
+            try:
+                if sha256(path.read_bytes()).hexdigest() != row['digest']:
+                    complete = False
+                    continue
+                parts = [p for p in loader(path) if p.profile_key == key]
+                if len(parts) != 1:
+                    complete = False
+                    continue
+                conditions = merge_conditions(conditions, parts[0].specific_conditions)
+            except (DddLoadError, ValueError, OSError):
+                complete = False
+        store.set_specific_conditions(key, conditions, checked=complete)
+    return store.get(key)
 
 
 def refresh_profile(store, key, *, loader=load_ddd_profiles):

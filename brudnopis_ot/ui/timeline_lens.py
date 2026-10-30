@@ -88,11 +88,26 @@ class DetailTimeline(QWidget):
                     painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, country)
                     painter.restore()
                 label = ACTIVITY_LABELS_PL[block.kind]
+                from ddd_analyzer.specific_conditions import ferry_details, ferry_intervals, FERRY_COLOR
+                detail = ferry_details(self.grid._scenario.specific_conditions, block.start, block.end, self.grid._zone)
+                if detail:
+                    label += ' · Prom/kolej'
                 label_rect = rect.adjusted(34 if show_country else 3, 0, -3, 0)
                 if label_rect.width() >= painter.fontMetrics().horizontalAdvance(label) + 6:
                     painter.setPen(QColor('#ffffff') if QColor(ACTIVITY_COLORS[block.kind]).lightness() < 110 else QColor('#18212b'))
                     painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label)
                 self.hits.append((block.id, rect, f'{label} · {bs:%d.%m %H:%M} — {be:%d.%m %H:%M} · {country_start_description(block)}'))
+                if detail:
+                    for interval in ferry_intervals(self.grid._scenario.specific_conditions):
+                        if not interval.overlaps(block.start, block.end):
+                            continue
+                        begin = max(start, bs, self.grid._disp(interval.start))
+                        finish = min(end, be, self.grid._disp(interval.end)) if interval.end else begin
+                        if begin <= finish and start <= begin <= end:
+                            mark_x = 18 + (begin-start).total_seconds()/seconds*width
+                            mark_w = (finish-begin).total_seconds()/seconds*width
+                            painter.fillRect(QRectF(mark_x, rect.top(), max(3, mark_w), 4), QColor(FERRY_COLOR))
+                    self.hits[-1] = (block.id, rect, self.hits[-1][2] + '\n' + detail)
                 from brudnopis_ot.ui.data_issues import issue_text, draw_issue_badge
                 warning = issue_text(block, getattr(self.grid, '_data_issues', []))
                 if warning:
@@ -137,9 +152,14 @@ class TimelineLensDialog(QDialog):
                 item.setData(Qt.ItemDataRole.UserRole, block.id)
                 from brudnopis_ot.ui.data_issues import issue_text
                 warning = issue_text(block, getattr(grid, '_data_issues', []))
+                from ddd_analyzer.specific_conditions import ferry_details
+                detail = ferry_details(grid._scenario.specific_conditions, block.start, block.end, grid._zone)
+                if detail:
+                    item.setText(item.text() + ' · Prom/kolej')
+                    item.setToolTip(detail)
                 if warning:
                     item.setText('! ' + item.text())
-                    item.setToolTip(warning)
+                    item.setToolTip('\n'.join(filter(None, (detail, warning))))
                 self.blocks.addItem(item)
         self.blocks.itemActivated.connect(lambda item: self.choose(item.data(Qt.ItemDataRole.UserRole)))
         layout.addWidget(self.blocks, 1)

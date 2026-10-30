@@ -57,12 +57,17 @@ def scenario_to_dict(scenario: Scenario) -> dict[str, Any]:
         "employer_country": scenario.employer_country,
         "blocks": [block_to_dict(b) for b in scenario.sorted_blocks()],
     }
+    if scenario.specific_conditions:
+        payload['specific_conditions'] = [
+            {'occurred_at': c.occurred_at.isoformat(), 'type_code': c.type_code}
+            for c in scenario.specific_conditions]
     if scenario.anchor_block_id:
         payload["anchor_block_id"] = scenario.anchor_block_id
     return payload
 
 
 def scenario_from_dict(data: dict[str, Any]) -> Scenario:
+    from ddd_analyzer.specific_conditions import SpecificCondition
     blocks = merge_contiguous_blocks(
         [block_from_dict(b) for b in data.get("blocks", [])]
     )
@@ -73,6 +78,8 @@ def scenario_from_dict(data: dict[str, Any]) -> Scenario:
         title=str(data.get("title", "Scenariusz")),
         blocks=blocks,
         anchor_block_id=data.get("anchor_block_id"),
+        specific_conditions=tuple(SpecificCondition(datetime.fromisoformat(c['occurred_at']), int(c['type_code']))
+                                  for c in data.get('specific_conditions', [])),
     )
 
 

@@ -453,6 +453,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         from brudnopis_ot.core.ddd_import import recover_open_activity
         loaded = recover_open_activity(self._ddd_store, loaded.profile_key) or loaded
+        from brudnopis_ot.core.ddd_import import recover_specific_conditions
+        loaded = recover_specific_conditions(self._ddd_store, loaded.profile_key) or loaded
         stored = self._ddd_store.get_cycle_start(loaded.profile_key)
         suggested = stored or self._default_cycle_start(loaded)
         if ask_cycle:

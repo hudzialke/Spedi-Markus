@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Literal
 from uuid import uuid4
+from ddd_analyzer.specific_conditions import SpecificCondition
 
 
 class ActivityKind(str, Enum):
@@ -84,6 +85,7 @@ class Scenario:
     blocks: list[Block] = field(default_factory=list)
     # Blok oznaczony jako kotwica „start tygodnia 1” (opcjonalnie)
     anchor_block_id: str | None = None
+    specific_conditions: tuple[SpecificCondition, ...] = ()
 
     def __post_init__(self) -> None:
         if self.week_start.weekday() != 0:

@@ -64,6 +64,16 @@ class RestPanel(QWidget):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #546e7a; font-size: 11px;")
         layout.addWidget(hint)
+        self.ferry_note = QLabel()
+        self.ferry_note.setWordWrap(True)
+        self.ferry_note.setVisible(False)
+        layout.addWidget(self.ferry_note)
+
+    def set_conditions(self, conditions):
+        from ddd_analyzer.specific_conditions import ferry_intervals, FERRY_REVIEW
+        intervals = ferry_intervals(conditions)
+        self.ferry_note.setVisible(bool(intervals))
+        self.ferry_note.setText(FERRY_REVIEW if intervals else '')
 
     def clear(self) -> None:
         self.table.setRowCount(0)

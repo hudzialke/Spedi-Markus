@@ -5,6 +5,7 @@ from spedi.i18n import tr as _tr
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
+from ddd_analyzer.specific_conditions import SpecificCondition
 
 
 class ActivityType(str, Enum):
@@ -195,6 +196,7 @@ class DddAnalysis:
     places: list[PlaceRecord] = field(default_factory=list)
     gnss_points: list[GnssPoint] = field(default_factory=list)
     open_activity: OpenActivity | None = None
+    specific_conditions: tuple[SpecificCondition, ...] = ()
 
     @property
     def activity_days(self) -> list[date]:

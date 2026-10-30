@@ -489,6 +489,7 @@ def parse_tacho_result(raw: dict[str, Any], source_path: str, file_kind: DddFile
         places=places,
         gnss_points=gnss_points,
         open_activity=open_activity,
+        specific_conditions=_specific_conditions_from_raw(raw),
     )
 
     if file_kind == DddFileKind.VU:
@@ -497,6 +498,22 @@ def parse_tacho_result(raw: dict[str, Any], source_path: str, file_kind: DddFile
             apply_activity_cutoff(driver, cutoff)
         analysis.driver_analyses = [driver for driver in analysis.driver_analyses if driver.segments]
     return analysis
+
+
+def _specific_conditions_from_raw(raw):
+    from ddd_analyzer.specific_conditions import SpecificCondition, merge_conditions
+    records = []
+    for item in raw.get('specific_conditions') or []:
+        if not isinstance(item, dict):
+            continue
+        timestamp = _parse_iso_dt(item.get('timestamp'))
+        try:
+            code = int(item.get('type_code'))
+        except (TypeError, ValueError):
+            continue
+        if timestamp and code in (1, 2, 3, 4):
+            records.append(SpecificCondition(_as_utc_naive(timestamp), code))
+    return merge_conditions(records)
 
 
 def _vu_driver_analyses(raw: dict, vehicle: DddAnalysis) -> list[DddAnalysis]:
@@ -566,5 +583,7 @@ def _vu_driver_analyses(raw: dict, vehicle: DddAnalysis) -> list[DddAnalysis]:
         days = [s.day for s in segments]
         out.append(replace(vehicle, driver=drivers[number], segments=segments,
             daily_summaries=build_daily_summaries(segments, {}), date_range=(min(days), max(days)),
-            driver_analyses=[], border_crossings=[], places=[], gnss_points=[]))
+            driver_analyses=[], border_crossings=[], places=[], gnss_points=[],
+            specific_conditions=tuple(c for c in vehicle.specific_conditions
+                if {s[3] for s in sessions if s[2] == 'First' and s[0] <= c.occurred_at < s[1]} == {number})))
     return out

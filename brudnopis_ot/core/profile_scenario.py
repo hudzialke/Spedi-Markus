@@ -10,6 +10,7 @@ from brudnopis_ot.core.serialize import block_from_dict, scenario_from_dict
 def original_scenario(profile):
     scenario = scenario_from_segments(profile.segments, title=profile.title,
                                       places=profile.places, border_crossings=profile.border_crossings)
+    scenario.specific_conditions = profile.specific_conditions
     for block in scenario.blocks:
         block.id = stable_id(block)
     return scenario
@@ -63,7 +64,8 @@ def rebase_scenario(baseline, edited, current):
             if (start, end) != (block.start, block.end):
                 part.id = stable_id(part)
             blocks.append(part)
-    result = replace(edited, blocks=sorted([*blocks, *additions], key=lambda b: (b.start, b.end, b.id)))
+    result = replace(edited, blocks=sorted([*blocks, *additions], key=lambda b: (b.start, b.end, b.id)),
+                     specific_conditions=current.specific_conditions)
     if result.anchor_block_id and not result.get_block(result.anchor_block_id):
         # An unedited anchor can grow when a new DDD extends the same activity.
         old = after.get(result.anchor_block_id)

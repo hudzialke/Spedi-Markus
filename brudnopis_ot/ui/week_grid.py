@@ -86,6 +86,10 @@ class WeekGridWidget(QWidget):
             if rect.contains(event.position()):
                 block = self._blocks_by_id.get(identity)
                 warning = issue_text(block, self._data_issues) if block else ''
+                if block and self._scenario:
+                    from ddd_analyzer.specific_conditions import ferry_details
+                    detail = ferry_details(self._scenario.specific_conditions, block.start, block.end, self._zone)
+                    warning = '\n'.join(filter(None, (warning, detail)))
                 break
         self.setToolTip(warning)
         super().mouseMoveEvent(event)
@@ -456,6 +460,22 @@ class WeekGridWidget(QWidget):
                         Qt.AlignmentFlag.AlignLeft,
                         block.country_start,
                     )
+
+            # Condition overlay preserves the source activity underneath it.
+            from ddd_analyzer.specific_conditions import ferry_intervals, FERRY_COLOR
+            for interval in ferry_intervals(self._scenario.specific_conditions):
+                begin = self._disp(interval.start)
+                finish = self._disp(interval.end) if interval.end else begin
+                if finish < week_start or begin >= week_end:
+                    continue
+                x0 = self._label_width + (max(begin, week_start)-week_start).total_seconds()/3600*px_h
+                x1 = self._label_width + (min(finish, week_end)-week_start).total_seconds()/3600*px_h
+                painter.fillRect(QRectF(x0, bar_top+2, max(4, x1-x0), 5), QColor(FERRY_COLOR))
+                painter.setPen(QColor(FERRY_COLOR))
+                mark_font = QFont()
+                mark_font.setPointSize(7)
+                painter.setFont(mark_font)
+                painter.drawText(QRectF(x0, bar_top+bar_h+15, 110, 13), Qt.AlignmentFlag.AlignLeft, _tr('Prom/kolej'))
 
             # Weekly rest labels + compensation green strip (also on OD ≥9h)
             if self._result is not None:

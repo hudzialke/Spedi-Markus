@@ -150,6 +150,8 @@ class DddProfileStore:
             self._ensure_column(conn, "profiles", "scenario_json", "TEXT")
             self._ensure_column(conn, "profiles", "open_activity_json", "TEXT")
             self._ensure_column(conn, "profiles", "open_activity_checked", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "profiles", "specific_conditions_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "profiles", "specific_conditions_checked", "INTEGER NOT NULL DEFAULT 0")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS archived_files (
@@ -194,7 +196,8 @@ class DddProfileStore:
 
     def load_ddd_scenario(self, profile_key: str, *, original: bool = False) -> Scenario:
         from brudnopis_ot.core.profile_scenario import original_scenario, exact_scenario, rebase_scenario
-        profile = self.get(profile_key)
+        from brudnopis_ot.core.ddd_import import recover_specific_conditions
+        profile = recover_specific_conditions(self, profile_key)
         if profile is None or profile.source_kind == 'template':
             raise ValueError('Wybierz profil DDD.')
         source = original_scenario(profile)
@@ -238,6 +241,13 @@ class DddProfileStore:
         with self._connect() as conn:
             conn.execute('UPDATE profiles SET open_activity_json=?, open_activity_checked=1 WHERE profile_key=?',
                          (payload, profile_key))
+
+    def set_specific_conditions(self, profile_key, conditions, *, checked=True):
+        payload = json.dumps([{'occurred_at': c.occurred_at.isoformat(), 'type_code': c.type_code}
+                              for c in conditions])
+        with self._connect() as conn:
+            conn.execute('UPDATE profiles SET specific_conditions_json=?, specific_conditions_checked=? WHERE profile_key=?',
+                         (payload, int(checked), profile_key))
 
     def get_confirmed_activity_end(self, profile_key, activity) -> datetime | None:
         if activity is None:
@@ -409,6 +419,9 @@ class DddProfileStore:
         filenames = tuple(json.loads(meta["filenames_json"] or "[]"))
         from ddd_analyzer.models import OpenActivity, ActivityType
         pending = json.loads(meta['open_activity_json']) if meta['open_activity_json'] else None
+        from ddd_analyzer.specific_conditions import SpecificCondition
+        conditions = tuple(SpecificCondition(datetime.fromisoformat(c['occurred_at']), c['type_code'])
+                           for c in json.loads(meta['specific_conditions_json'] or '[]'))
         return DddLoadResult(
             template_id=profile_key.removeprefix("template:") if meta["source_kind"] == "template" else None,
             segments=segments,
@@ -424,6 +437,7 @@ class DddProfileStore:
             places=tuple(places),
             gnss_points=tuple(gnss_points),
             open_activity=OpenActivity(ActivityType(pending['activity']), datetime.fromisoformat(pending['start'])) if pending else None,
+            specific_conditions=conditions,
         )
 
     def upsert(self, profile: DddLoadResult) -> DddLoadResult:
@@ -462,6 +476,7 @@ class DddProfileStore:
             )
             conn.execute("DELETE FROM segments WHERE profile_key = ?", (profile.profile_key,))
             self.set_open_activity(profile.profile_key, profile.open_activity)
+            self.set_specific_conditions(profile.profile_key, profile.specific_conditions, checked=False)
             conn.executemany(
                 "INSERT INTO segments (profile_key, day, activity, start_minute, end_minute) "
                 "VALUES (?, ?, ?, ?, ?)",
