@@ -106,6 +106,20 @@ def run(report_path: str) -> int:
             assert '09.11.2026 00:00' in arrival.return_reason
             report['checks'].append('cross-week-compensation-return')
 
+            restarted = Scenario(week_start=date(2026, 11, 2), anchor_block_id='departure', blocks=[
+                Block(ActivityKind.REST, datetime(2026, 10, 2, 8), datetime(2026, 10, 3, 8, 47), id='old-reduction'),
+                Block(ActivityKind.REST, datetime(2026, 10, 9, 12), datetime(2026, 10, 12, 0, 30), id='short-surplus'),
+                Block(ActivityKind.REST, datetime(2026, 10, 26, 8), datetime(2026, 11, 2, 8), id='home'),
+                Block(ActivityKind.WORK, datetime(2026, 11, 2, 8), datetime(2026, 11, 2, 9), id='departure'),
+            ])
+            renewed = calculate(restarted, WatchOptions(verified_revision=history_revision(restarted)))
+            assert renewed.return_by == datetime(2026, 11, 29, 22, 59)
+            assert renewed.return_compensation_minutes == 0 and not renewed.pending_compensations
+            late = [event for event in renewed.compensation_events if event.kind == 'paid_late']
+            assert len(late) == 1 and late[0].minutes == 20 * 60 + 13
+            assert late[0].payment_rest_ids == ('home',)
+            report['checks'].append('late-single-compensation-new-departure')
+
             workbook = Workbook()
             workbook.active['A1'] = 'SYNTHETIC POD'
             sheet_path = root / 'synthetic.xlsx'
