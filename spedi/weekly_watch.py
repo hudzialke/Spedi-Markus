@@ -429,14 +429,15 @@ def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> Wat
     pending = []
     events = []
     analyzed = analyze_scenario(debt_scenario, pending_debts=pending, compensation_events=events)
-    # A compensation actually taken late is a historical violation, not another
-    # future demand for the same 42h. Allocate capacity only once per later rest.
+    # Single and pair compensations actually taken late remain historical
+    # violations, not future demands for the same hours after a new departure.
+    # Allocate only the unused surplus above 45h, once per later rest.
     late_paid = False
     allocations = {p.block_ids: p.compensation_hours for p in analyzed.weekly_rests}
     for period in analyzed.weekly_rests:
         capacity = max(0, period.duration_hours - 45 - period.compensation_hours)
         for debt in list(pending):
-            if debt.from_pm_pair and period.start >= debt.source_end and capacity >= debt.remaining:
+            if period.start >= debt.source_end and capacity + 1e-6 >= debt.remaining:
                 capacity -= debt.remaining
                 pending.remove(debt)
                 events.append(CompensationEvent('paid_late', debt.source_rest_ids, period.start,
@@ -484,7 +485,7 @@ def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> Wat
         return result(start, deadline, 0, "unknown", "Brak pełnej historii odpoczynków w ruchomym oknie 4 tygodni. Uzupełnij ją lub potwierdź kompletność.", last_activity, first)
     status, reason = _permissions(weekly, deadline, full, options)
     if late_paid:
-        reason += " W historii rekompensata pary została oddana po terminie."
+        reason += " W historii rekompensata została oddana po terminie."
     overdue = [d for d in pending if not d.from_pm_pair and d.deadline <= deadline]
     if overdue:
         status = "unknown" if status != "no" else status

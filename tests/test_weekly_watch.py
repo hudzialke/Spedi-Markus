@@ -269,6 +269,47 @@ def test_late_pair_compensation_is_not_demanded_again():
     assert result.start_by == result.weekly_start_by
 
 
+def test_late_single_compensation_does_not_pull_new_departure_back_to_old_cycle():
+    sc = Scenario(week_start=date(2026, 11, 2), anchor_block_id="departure", blocks=[
+        Block(ActivityKind.REST, datetime(2026, 10, 2, 8), datetime(2026, 10, 3, 8, 47), id="old-reduction"),
+        Block(ActivityKind.REST, datetime(2026, 10, 9, 12), datetime(2026, 10, 12, 0, 30), id="short-surplus"),
+        Block(ActivityKind.REST, datetime(2026, 10, 26, 8), datetime(2026, 11, 2, 8), id="home"),
+        Block(ActivityKind.WORK, datetime(2026, 11, 2, 8), datetime(2026, 11, 2, 9), id="departure"),
+    ])
+    before = scenario_to_dict(deepcopy(sc))
+    result = calculate(sc, confirmed(sc))
+    assert result.return_by == datetime(2026, 11, 29, 22, 59)
+    assert result.return_compensation_minutes == 0
+    assert result.return_rest_minutes == 45 * 60
+    assert result.pending_compensations == ()
+    payments = [event for event in result.compensation_events if event.kind == "paid_late"]
+    assert len(payments) == 1
+    assert payments[0].source_rest_ids == ("old-reduction",)
+    assert payments[0].payment_rest_ids == ("home",)
+    assert payments[0].minutes == 20 * 60 + 13
+    assert payments[0].at > payments[0].deadline
+    assert "po terminie" in result.reason
+    assert scenario_to_dict(sc) == before
+
+
+@pytest.mark.parametrize("payment_week,remaining_index,late_count", [(6, 0, 0), (7, 2, 1)])
+def test_late_compensation_capacity_cannot_pay_two_debts_with_the_same_hours(payment_week, remaining_index, late_count):
+    sc = scenario(24, 45, 24, 45)
+    # Each old reduction owes 21h. This later regular rest has only 21h
+    # available for compensation, so the other debt must remain visible.
+    sc.blocks.append(rest(payment_week, 66))
+    result = calculate(sc, confirmed(sc))
+    paid = [event for event in result.compensation_events if event.kind == "paid_late"]
+    assert len(paid) == late_count
+    if paid:
+        assert paid[0].minutes == 21 * 60
+        assert paid[0].source_rest_ids == (sc.blocks[0].id,)
+    assert len(result.pending_compensations) == 1
+    assert result.pending_compensations[0].source_rest_ids == (sc.blocks[remaining_index].id,)
+    payment = next(rest for rest in result.rest_history if rest.block_ids == (sc.blocks[-1].id,))
+    assert payment.compensation_hours == 21
+
+
 @pytest.fixture
 def app(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
