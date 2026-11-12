@@ -11,6 +11,12 @@ if (-not (Test-Path -LiteralPath $buildPython)) {
     python -m venv .venv
     if ($LASTEXITCODE -ne 0) { throw 'Cannot create a Python virtual environment.' }
 }
+$runtimeVersion = & $buildPython -c 'import sys; print(".".join(map(str, sys.version_info[:3])))'
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read the build Python version.' }
+$runtimeVersion = [version]$runtimeVersion
+if ($runtimeVersion -ge [version]'3.14.0' -and $runtimeVersion -lt [version]'3.14.5') {
+    throw 'Python 3.14.0 through 3.14.4 can crash while loading driver history. Use Python 3.14.10 for Windows builds and pass its executable with -PythonPath.'
+}
 if (-not $SkipDependencies) {
     & $buildPython -m pip install -e '.[dev,sync]'
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
