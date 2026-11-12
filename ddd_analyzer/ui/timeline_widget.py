@@ -183,12 +183,15 @@ class _TimelineCanvas(QWidget):
                 x = margin_x + int(width * lo)
                 painter.fillRect(x, top + 1, max(3, int(width * (hi-lo))), 5, QColor(FERRY_COLOR))
         painter.setPen(QColor("#546e7a"))
+        font_metrics = painter.fontMetrics()
         for hour in self.HOUR_MARKS:
             x = margin_x + int(width * hour / 24)
             painter.drawLine(x, top + bar_height + 2, x, top + bar_height + 8)
             instant = datetime.combine(self._day, datetime.min.time()) + timedelta(hours=hour) if self._day else None
             label = utc_naive_to_zone(instant, self._zone).strftime('%H:%M') if instant else f'{hour:02d}:00'
-            painter.drawText(x - 12, top + bar_height + 22, label)
+            label_width = font_metrics.horizontalAdvance(label)
+            label_x = max(1, min(x - label_width // 2, self.width() - label_width - 1))
+            painter.drawText(label_x, top + bar_height + 22, label)
 
         if self._segments:
             totals: dict[ActivityType, int] = {}

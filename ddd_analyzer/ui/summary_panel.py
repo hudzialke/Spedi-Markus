@@ -6,7 +6,7 @@ from datetime import date
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
@@ -26,24 +26,30 @@ class SummaryPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        totals_layout = QHBoxLayout()
+        totals_layout = QGridLayout()
+        totals_layout.setVerticalSpacing(2)
         self.drive_label = QLabel(_tr("Jazda: —"))
         self.work_label = QLabel(_tr("Praca: —"))
         self.avail_label = QLabel(_tr("Dyspozycyjnosc: —"))
         self.rest_label = QLabel(_tr("Odpoczynek: —"))
-        for label in (self.drive_label, self.work_label, self.avail_label, self.rest_label):
+        for index, label in enumerate((self.drive_label, self.work_label, self.avail_label, self.rest_label)):
             label.setStyleSheet("font-size: 12px;")
-            totals_layout.addWidget(label)
-        totals_layout.addStretch()
+            totals_layout.addWidget(label, index // 2, index % 2, Qt.AlignmentFlag.AlignLeft)
+        totals_layout.setColumnStretch(2, 1)
         layout.addLayout(totals_layout)
 
         self.table = QTableWidget(0, len(self.HEADERS))
+        self.table.setStyleSheet(
+            "QTableWidget, QHeaderView { font-size: 13px; }"
+            "QHeaderView::section { padding: 4px; }"
+        )
         self.table.setHorizontalHeaderLabels(self.HEADERS)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.resizeColumnsToContents()
         layout.addWidget(self.table)
 
     def set_summaries(self, daily: list[DailySummary], week: WeekSummary | None = None) -> None:

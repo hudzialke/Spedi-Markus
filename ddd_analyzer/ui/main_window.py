@@ -178,9 +178,19 @@ class MainWindow(QMainWindow):
         self.btn_night.setEnabled(False)
         tools_row.addWidget(self.btn_night)
 
+        source_label = QLabel(_tr("Zrodlo aktywnosci:"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItem(_tr("Karta kierowcy"), "card")
+        self.source_combo.addItem(_tr("Pamiec VU"), "vu")
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        source_label.setBuddy(self.source_combo)
+        tools_row.addWidget(source_label)
+        tools_row.addWidget(self.source_combo)
+
         tools_row.addStretch()
         outer_layout.addLayout(tools_row)
 
+        details_row = QHBoxLayout()
         self.header_box = QGroupBox(_tr("Identyfikacja"))
         header_box_layout = QVBoxLayout(self.header_box)
         header_box_layout.setContentsMargins(8, 6, 8, 6)
@@ -214,29 +224,23 @@ class MainWindow(QMainWindow):
         id_scroll.setWidgetResizable(True)
         id_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         id_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        id_scroll.setMaximumHeight(40)
         id_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        header_box_layout.addWidget(id_scroll)
+        id_scroll.setFixedHeight(
+            id_host.sizeHint().height() + id_scroll.horizontalScrollBar().sizeHint().height()
+        )
+        header_box_layout.addWidget(id_scroll, alignment=Qt.AlignmentFlag.AlignTop)
+        details_row.addWidget(self.header_box, stretch=1)
 
-        source_row = QHBoxLayout()
-        source_row.addWidget(QLabel(_tr("Zrodlo aktywnosci:")))
-        self.source_combo = QComboBox()
-        self.source_combo.addItem(_tr("Karta kierowcy"), "card")
-        self.source_combo.addItem(_tr("Pamiec VU"), "vu")
-        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
-        source_row.addWidget(self.source_combo)
-        source_row.addStretch()
-        header_box_layout.addLayout(source_row)
-
-        vehicles_label = QLabel(_tr("Pojazdy"))
-        vehicles_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #455a64;")
-        header_box_layout.addWidget(vehicles_label)
+        vehicles_box = QGroupBox(_tr("Pojazdy"))
+        vehicles_layout = QVBoxLayout(vehicles_box)
+        vehicles_layout.setContentsMargins(8, 6, 8, 6)
 
         self.vehicles_table = QTableWidget(0, 6)
         self.vehicles_table.setHorizontalHeaderLabels(
             [_tr("Tablica"), _tr("Kraj"), "VIN", _tr("Odometr od"), _tr("Odometr do"), _tr("Okres uzycia")]
         )
         self.vehicles_table.horizontalHeader().setStretchLastSection(True)
+        self.vehicles_table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         self.vehicles_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.vehicles_table.setAlternatingRowColors(True)
         self.vehicles_table.verticalHeader().setVisible(False)
@@ -245,8 +249,10 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
-        header_box_layout.addWidget(self.vehicles_table)
-        outer_layout.addWidget(self.header_box)
+        self.vehicles_table.resizeColumnsToContents()
+        vehicles_layout.addWidget(self.vehicles_table)
+        details_row.addWidget(vehicles_box, stretch=1)
+        outer_layout.addLayout(details_row)
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.setChildrenCollapsible(False)
@@ -270,9 +276,7 @@ class MainWindow(QMainWindow):
         summary_layout.addWidget(self.summary)
         self.main_splitter.addWidget(summary_box)
 
-        self.main_splitter.setStretchFactor(0, 3)
-        self.main_splitter.setStretchFactor(1, 2)
-        self.main_splitter.setSizes([620, 420])
+        self.main_splitter.setSizes([1100, 400])
         outer_layout.addWidget(self.main_splitter, stretch=1)
 
         self.summary.table.itemSelectionChanged.connect(self._on_day_selected)
