@@ -3,7 +3,7 @@
 
 #define MyAppName "Spedi"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.1"
+  #define MyAppVersion "0.4.0"
 #endif
 #define MyAppPublisher "Patryk Prośniak (hudzialke)"
 #define MyAppExeName "Spedi.exe"
@@ -39,16 +39,26 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "polish"; MessagesFile: "compiler:Languages\Polish.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Utwórz skrót na Pulpicie"; GroupDescription: "Dodatkowe skróty:"; Flags: checkedonce
+Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:AdditionalShortcuts}"; Flags: checkedonce
+
+[CustomMessages]
+english.DesktopIcon=Create a desktop shortcut
+polish.DesktopIcon=Utwórz skrót na Pulpicie
+english.AdditionalShortcuts=Additional shortcuts:
+polish.AdditionalShortcuts=Dodatkowe skróty:
+english.UninstallApp=Uninstall %1
+polish.UninstallApp=Odinstaluj %1
+english.RunApp=Launch %1
+polish.RunApp=Uruchom %1
 
 [Files]
 Source: "{#MyAppSource}\*"; DestDir: "{app}"; Excludes: "dane\*,raporty\*,scenariusze\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
-Name: "{group}\Odinstaluj {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallApp,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Uruchom {#MyAppName}"; Flags: nowait postinstall skipifsilent; WorkingDir: "{app}"
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:RunApp,{#MyAppName}}"; Flags: nowait postinstall skipifsilent; WorkingDir: "{app}"
 

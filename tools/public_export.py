@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT_FILES = {
     '.gitignore', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'README.pl.md',
-    'pyproject.toml', 'build.ps1', 'Spedi.spec',
+    'pyproject.toml', 'build.ps1', 'Spedi.spec', 'CHANGELOG.md',
 }
 SOURCE_DIRS = {
     'spedi': {'.py', '.qss', '.ico', '.json', '.txt', '.pem', '.bin', ''},
@@ -25,13 +25,13 @@ SOURCE_DIRS = {
 }
 SKIP_DIRS = {'.git', '.venv', '.gradle', '__pycache__', '.pytest_cache', 'build',
              'dist', 'release', 'artifacts', 'work', 'node_modules', 'research',
-             'dane', 'ddd_files', 'ewidencja', 'raporty', 'scenariusze', 'zalaczniki'}
+             'dane', 'ddd_files', 'ewidencja', 'raporty', 'scenariusze', 'zalaczniki', 'backups'}
 PRIVATE_NAMES = {
     'google-services.json', 'local.properties', 'existing-rules.json',
     'config.json', 'settings.json', '.env',
 }
 PRIVATE_SUFFIXES = {'.db', '.sqlite', '.sqlite3', '.ddd', '.dpapi', '.keystore',
-                    '.jks', '.p12', '.pfx', '.log', '.pdf', '.csv', '.xlsx', '.docx'}
+                    '.jks', '.p12', '.pfx', '.log', '.pdf', '.csv', '.xlsx', '.docx', '.7z', '.zip', '.bak', '.backup', '.sql'}
 CREDENTIAL_PATTERNS = [
     re.compile(rb'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----'),
     re.compile(rb'AIza[0-9A-Za-z_-]{30,}'),
@@ -106,6 +106,9 @@ def audit(root: Path, files: list[Path] | None = None, forbidden_values: tuple[b
             findings.append(f'Unexpected or private file: {relative}')
             continue
         contents = path.read_bytes()
+        if contents.startswith((b'SQLite format 3\x00', b'7z\xbc\xaf\x27\x1c')):
+            findings.append(f'Database or backup content: {relative}')
+            continue
         if any(pattern.search(contents) for pattern in CREDENTIAL_PATTERNS):
             findings.append(f'Credential pattern: {relative}')
         if any(value in contents for value in forbidden_values if len(value) >= 8):

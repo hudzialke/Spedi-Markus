@@ -2,6 +2,8 @@
 
 **English** · [Polski](README.pl.md)
 
+[Changelog](CHANGELOG.md) · [What's new in 0.4.0](docs/releases/0.4.0.md#english)
+
 ## Download for Windows (64-bit)
 
 [**Download the Spedi installer**](https://github.com/hudzialke/Spedi-Markus/releases/latest/download/Spedi-Setup.exe)
@@ -45,6 +47,26 @@ Use at your own risk. Independently verify results and back up your data.
 The application does not replace legal advice or regulatory compliance checks.
 Changing the interface language does not change the applicable calculation
 rules or the time zone of tachograph data.
+
+## Backups and migration
+
+In Brudnopis, open **Edit → Data backup…**. **All in** creates a portable `.7z`
+containing all module databases, DDD archives, attachments, and scenarios/reports
+from the application's default folders. Choose a destination folder or upload
+to the paired Google account (**Spedi — backupy** folder). Uploading also keeps
+the local copy. Lossless LZMA2 compression is followed by full SHA-256 verification.
+
+On another computer, select the `.7z` or legacy `.zip`, an extracted folder
+containing `manifest.json`, or download a backup from the **Google Drive** tab.
+After confirmation, restart Spedi to replace the databases. The current data is
+backed up first, and managed DDD/attachment paths are adjusted to the new computer.
+Service credentials are excluded; reconnect Google separately. An external
+7-Zip installation is not required.
+
+Google sign-in from the backup window waits up to ten minutes. Keep Spedi open
+and start a fresh sign-in after an expired attempt. If Drive reports
+`SERVICE_DISABLED`, enable Google Drive API in the project used by your OAuth
+client. A successful browser sign-in does not by itself confirm Drive access.
 
 ## Run from source
 

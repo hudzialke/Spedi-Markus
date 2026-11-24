@@ -224,13 +224,7 @@ class ShellWindow(QMainWindow):
         worker.start()
 
     def _open_backups(self):
-        from spedi.backups import application_backups
-        from spedi.backup_ui import BackupDialog
-        dialog = BackupDialog(application_backups(), self)
-        try:
-            dialog.exec()
-        finally:
-            dialog.deleteLater()
+        self._brudnopis._open_backups()
 
     def _open_profile_history(self):
         window = self._brudnopis

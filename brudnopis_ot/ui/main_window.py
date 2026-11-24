@@ -222,9 +222,12 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def _build_toolbar(self) -> None:
-        tb = QToolBar(_tr("Plik"))
-        tb.setMovable(False)
-        self.addToolBar(tb)
+        menu = self.menuBar()
+        menu.setNativeMenuBar(False)
+        edit_menu = menu.addMenu(_tr('Edycja'))
+        self._ddd_menu = menu.addMenu('DDD')
+        view_menu = menu.addMenu(_tr('Widok'))
+        tb = edit_menu
 
         act_new = QAction(_tr("Nowy"), self)
         act_new.setShortcut(QKeySequence.StandardKey.New)
@@ -242,6 +245,7 @@ class MainWindow(QMainWindow):
         tb.addAction(act_save)
 
         act_save_as = QAction(_tr("Zapisz jako…"), self)
+        act_save_as.setShortcut(QKeySequence.StandardKey.SaveAs)
         act_save_as.triggered.connect(self._save_as)
         tb.addAction(act_save_as)
 
@@ -252,9 +256,12 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        file_tb = tb
-        tb = QToolBar(_tr("Profile"), self)
-        tb.setMovable(False)
+        act_backup = QAction(_tr('Backup danych…'), self)
+        act_backup.setObjectName('BackupDataAction')
+        act_backup.triggered.connect(self._open_backups)
+        tb.addAction(act_backup)
+
+        tb = self._ddd_menu
         act_ddd = QAction(_tr("Dodaj pliki DDD…"), self)
         act_ddd.setToolTip(
             _tr("Wiele plików C_* (karta) i M_* (VU) naraz — program sam pogrupuje "
@@ -269,17 +276,13 @@ class MainWindow(QMainWindow):
         act_end_ddd.triggered.connect(self._check_ddd_end)
         tb.addAction(act_end_ddd)
 
-        template_button = QToolButton()
-        template_button.setText(_tr("Ręczny profil"))
-        template_button.setToolTip(_tr("Template Driver — scenariusz bez pliku DDD"))
-        template_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        template_menu = QMenu(template_button)
+        template_menu = tb.addMenu(_tr('Ręczny profil'))
         template_menu.addAction(_tr("Utwórz…"), self._new_template)
         self._rename_template_action = template_menu.addAction(_tr("Zmień nazwę…"), self._rename_template)
         self._delete_template_action = template_menu.addAction(_tr("Usuń profil…"), self._delete_template)
-        template_button.setMenu(template_menu)
-        tb.addWidget(template_button)
-
+        tb = QToolBar(_tr('Profil i oś'), self)
+        tb.setMovable(False)
+        self.addToolBar(tb)
         tb.addWidget(QLabel(_tr(" Profil: ")))
         self._ddd_combo = QComboBox()
         self._ddd_combo.setMinimumWidth(220)
@@ -300,7 +303,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(self._cycle_edit)
 
         profile_tb = tb
-        tb = file_tb
+        tb = view_menu
         tb.addSeparator()
 
         act_add_week = QAction(_tr("Dodaj tydzień"), self)
@@ -320,7 +323,7 @@ class MainWindow(QMainWindow):
         tb.addAction(act_demo)
 
         tb.addSeparator()
-        tb.addWidget(QLabel(_tr(" Strefa: ")))
+        profile_tb.addWidget(QLabel(_tr(" Strefa: ")))
         self._zone_combo = QComboBox()
         self._zone_combo.addItem(zone_label("Europe/Warsaw"), "Europe/Warsaw")
         self._zone_combo.addItem(zone_label("UTC"), "UTC")
@@ -328,7 +331,7 @@ class MainWindow(QMainWindow):
         if zidx >= 0:
             self._zone_combo.setCurrentIndex(zidx)
         self._zone_combo.currentIndexChanged.connect(self._on_zone_changed)
-        tb.addWidget(self._zone_combo)
+        profile_tb.addWidget(self._zone_combo)
 
         tb.addSeparator()
         act_zoom_in = QAction(_tr("Oś +"), self)
@@ -345,12 +348,22 @@ class MainWindow(QMainWindow):
         tb.addAction(act_zoom_out)
         self.addAction(act_zoom_in)
         self.addAction(act_zoom_out)
-        for btn in tb.findChildren(QToolButton):
-            btn.setAutoRaise(False)
-        self.addToolBarBreak()
-        self.addToolBar(profile_tb)
         for btn in profile_tb.findChildren(QToolButton):
             btn.setAutoRaise(False)
+
+    def _open_backups(self) -> None:
+        # Include the current profile's latest edits in the database snapshot.
+        if self._dirty:
+            self._save()
+            if self._dirty:
+                return
+        from spedi.backups import application_backups
+        from spedi.backup_ui import BackupDialog
+        dialog = BackupDialog(application_backups(), self)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def _qdate(self, day: date) -> QDate:
         return QDate(day.year, day.month, day.day)

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Spedi (Windows one-folder bundle)."""
 import os
+import sys
 
 # Prefer Windows runtime DLLs over unrelated tools injected into PATH (e.g.
 # Poppler's icuuc.dll exports versioned symbols incompatible with Qt's system ICU).
@@ -8,9 +9,10 @@ if os.name == "nt":
     system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
     os.environ["PATH"] = system32 + os.pathsep + os.environ.get("PATH", "")
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 base_path = os.path.abspath(SPECPATH)
+sys.path.insert(0, base_path)
 tacho_root = os.path.join(base_path, "spedi", "_vendor", "tachograph")
 ddd_root = brud_root = ewi_root = disp_root = base_path
 
@@ -24,6 +26,7 @@ datas = [
 ]
 binaries = []
 hiddenimports = []
+datas += copy_metadata('py7zr', recursive=True)
 
 # Private offline OCR, downloaded separately by tools/setup_tesseract.py.
 ocr_runtime = os.path.join(base_path, 'work', 'local-tools', 'tesseract')
@@ -46,6 +49,7 @@ for pkg in (
     "markus_dispatcher",
     "reportlab",
     "spedi",
+    "py7zr",
 ):
     try:
         tmp_ret = collect_all(pkg)
@@ -126,6 +130,13 @@ a = Analysis(
     optimize=0,
 )
 pyz = PYZ(a.pure)
+
+# Native OCR keeps its own DLLs beside tesseract.exe. Analysis can also copy
+# these to the bundle root; retain shared dependencies and remove only exact
+# private duplicates after checking normal and delayed PE imports.
+from tools.bundle_helpers import prune_private_ocr_duplicates
+a.binaries, removed_ocr_duplicates = prune_private_ocr_duplicates(a.binaries, a.datas, ocr_runtime)
+print(f'OCR duplicate root DLLs removed: {len(removed_ocr_duplicates)}')
 
 exe = EXE(
     pyz,

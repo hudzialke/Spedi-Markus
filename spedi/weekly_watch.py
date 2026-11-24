@@ -6,6 +6,8 @@ Unknown history/geography is deliberately not a permission to use a derogation.
 """
 from __future__ import annotations
 
+from spedi.i18n import tr
+
 from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
@@ -186,7 +188,7 @@ def _permissions(weekly: list[WeeklyRestPeriod], deadline: datetime, scenario: S
     for choice in choices:
         combinations *= len(choice)
     if combinations > 4096:
-        return "unknown", "Zbyt wiele niejednoznacznych przypisań OT do tygodni; sprawdź historię."
+        return "unknown", tr("Zbyt wiele niejednoznacznych przypisań OT do tygodni; sprawdź historię.")
     possible_unknown = False
     for assignment in product(*choices):
         assigned = [entry for rest_entries in assignment for entry in rest_entries]
@@ -201,7 +203,7 @@ def _permissions(weekly: list[WeeklyRestPeriod], deadline: datetime, scenario: S
         if len(two) + 1 < 2:
             continue
         if any(r.classification == "regular" for _, r in two):
-            return "yes", "Można skrócić do co najmniej 24 h na wskazany termin; zachowane minima 2 i 4 tygodni."
+            return "yes", tr("Można skrócić do co najmniej 24 h na wskazany termin; zachowane minima 2 i 4 tygodni.")
         # Second reduced weekly rest under the international-goods derogation.
         prior = [r for day, r in two if day == previous and r.classification == "reduced"]
         if not prior:
@@ -219,11 +221,11 @@ def _permissions(weekly: list[WeeklyRestPeriod], deadline: datetime, scenario: S
         if geography is None or not options.international_goods:
             possible_unknown = True
             continue
-        return "conditional", ("Można jako drugi skrócony wyłącznie w międzynarodowym przewozie rzeczy, "
-                                "ze startem poza krajem siedziby i zamieszkania. Następny OT: obie rekompensaty + 45 h.")
+        return "conditional", (tr("Można jako drugi skrócony wyłącznie w międzynarodowym przewozie rzeczy, "
+                                "ze startem poza krajem siedziby i zamieszkania. Następny OT: obie rekompensaty + 45 h."))
     if possible_unknown:
-        return "unknown", "Drugi skrócony wymaga potwierdzenia przewozu międzynarodowego i krajów rozpoczęcia/zamieszkania."
-    return "no", "Na ten termin wymagany regularny OT: minima w ruchomych 2/4 tygodniach albo obowiązek po dwóch skróconych."
+        return "unknown", tr("Drugi skrócony wymaga potwierdzenia przewozu międzynarodowego i krajów rozpoczęcia/zamieszkania.")
+    return "no", tr("Na ten termin wymagany regularny OT: minima w ruchomych 2/4 tygodniach albo obowiązek po dwóch skróconych.")
 
 
 def _compensation_assignments(weekly, week1, regular_limit):
@@ -293,7 +295,7 @@ def _home_return(scenario, weekly, debt_scenario, pending, options, assignment_d
     week1 = monday(anchor.start) if anchor else scenario.week_start
     departure = anchor.start if anchor else midnight(week1)
     if not weekly and anchor is None:
-        return None, 0, 0, "Powrót: brak odpoczynków i oznaczonego startu trasy."
+        return None, 0, 0, tr("Powrót: brak odpoczynków i oznaczonego startu trasy.")
     end = midnight(week1 + timedelta(weeks=4))
     week4 = midnight(week1 + timedelta(weeks=3))
     # Data have minute precision; Monday 00:00 already belongs to week 5.
@@ -320,9 +322,9 @@ def _home_return(scenario, weekly, debt_scenario, pending, options, assignment_d
     complete = (options.verified_revision == history_revision(scenario)
                 or _complete(scenario, departure, known_end))
     if _conflicts(scenario, departure):
-        return None, 0, 0, "Powrót: sprzeczne aktywności — popraw historię kierowcy."
+        return None, 0, 0, tr("Powrót: sprzeczne aktywności — popraw historię kierowcy.")
     if not pair and not complete:
-        return None, 0, 0, "Powrót: brak pełnej historii od startu tygodnia 1. Uzupełnij ją lub potwierdź kompletność."
+        return None, 0, 0, tr("Powrót: brak pełnej historii od startu tygodnia 1. Uzupełnij ją lub potwierdź kompletność.")
 
     # Correct single-debt calendar deadlines to the display jurisdiction. The
     # legacy analyzer uses naive UTC calendar dates for these deadlines.
@@ -373,23 +375,24 @@ def _home_return(scenario, weekly, debt_scenario, pending, options, assignment_d
                 assignment_details.append((source.block_ids, week, midnight(week+timedelta(weeks=4))))
     compensation = pair_minutes + sum(minutes for _, minutes in singles)
     if pair:
-        reason = "Powrót przed regularnym OT po dwóch kolejnych skróconych: obie rekompensaty bez przerwy przed 45 h."
+        reason = tr("Powrót przed regularnym OT po dwóch kolejnych skróconych: obie rekompensaty bez przerwy przed 45 h.")
         if not any(d.from_pm_pair and set(d.source_rest_ids) == set(pair[0].block_ids + pair[1].block_ids) for d in pending):
-            reason += " Rekompensata jest już zapisana; termin pokazuje obowiązek powrotu tej trasy, nie nowy dług. Po powrocie ustaw nowy start tygodnia 1."
+            reason += tr(" Rekompensata jest już zapisana; termin pokazuje obowiązek powrotu tej trasy, nie nowy dług. Po powrocie ustaw nowy start tygodnia 1.")
     else:
-        reason = "Powrót na regularny odpoczynek w 4. tygodniu trasy. Regularny OT w trasie nie zeruje tego okresu."
+        reason = tr("Powrót na regularny odpoczynek w 4. tygodniu trasy. Regularny OT w trasie nie zeruje tego okresu.")
         if not before or before[-1].end + timedelta(hours=144) < week4:
-            reason += " To granica 4. tygodnia; kolejne OT mogą przyspieszyć termin."
-    reason += f" Start tygodnia 1: {week1:%d.%m.%Y}."
+            reason += tr(" To granica 4. tygodnia; kolejne OT mogą przyspieszyć termin.")
+    reason += tr(' Start tygodnia 1: {date}.').format(date=f'{week1:%d.%m.%Y}')
     for source_week, due in sorted(set(shifted)):
         local_due = due.replace(tzinfo=timezone.utc).astimezone(WARSAW)
-        reason += (f" OT obejmujący granicę tygodni przypisano do tygodnia od {source_week:%d.%m.%Y};"
-                   f" rekompensata do {local_due:%d.%m.%Y %H:%M}.")
+        reason += tr(' OT obejmujący granicę tygodni przypisano do tygodnia od {week}; rekompensata do {due}.').format(
+            week=f'{source_week:%d.%m.%Y}', due=f'{local_due:%d.%m.%Y %H:%M}')
     if compensation:
         after = compensation - prefix
-        reason += f" Plan od powrotu: {prefix // 60}:{prefix % 60:02d} rekompensaty + 45:00 OT + {after // 60}:{after % 60:02d} rekompensaty."
-        reason += " Pojedyncze skrócenia z późniejszym terminem pozostają do oddania osobno."
-    reason += " Termin dotyczy przyjazdu; dojazd nie jest odpoczynkiem."
+        reason += tr(' Plan od powrotu: {before} rekompensaty + 45:00 OT + {after} rekompensaty.').format(
+            before=f'{prefix // 60}:{prefix % 60:02d}', after=f'{after // 60}:{after % 60:02d}')
+        reason += tr(" Pojedyncze skrócenia z późniejszym terminem pozostają do oddania osobno.")
+    reason += tr(" Termin dotyczy przyjazdu; dojazd nie jest odpoczynkiem.")
     return arrival, compensation, 45 * 60 + compensation, reason
 
 
@@ -465,7 +468,7 @@ def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> Wat
     anchor = full.get_block(full.anchor_block_id) if full.anchor_block_id else None
     reference = weekly[-1].end if weekly else (anchor.start if anchor else None)
     if reference is None:
-        return result(None, None, 0, "unknown", "Brak OT ≥24 h lub oznaczonego końca poprzedniego OT (start tygodnia 1).", last_activity)
+        return result(None, None, 0, "unknown", tr("Brak OT ≥24 h lub oznaczonego końca poprzedniego OT (start tygodnia 1)."), last_activity)
     deadline = reference + timedelta(hours=144)
     pairs = [d for d in pending if d.from_pm_pair]
     comp = round(sum(d.remaining * 60 for d in pairs))
@@ -473,21 +476,21 @@ def calculate(scenario: Scenario, options: WatchOptions = WatchOptions()) -> Wat
     start = min([deadline, *starts])
     first = monday(deadline) - timedelta(weeks=3)
     if _conflicts(full, midnight(first)):
-        return result(start, deadline, comp, "unknown", "Sprzeczne, nakładające się aktywności. Najpierw popraw bloki kierowcy.", last_activity, first)
+        return result(start, deadline, comp, "unknown", tr("Sprzeczne, nakładające się aktywności. Najpierw popraw bloki kierowcy."), last_activity, first)
     if pairs:
         return result(start, deadline, comp, "no",
-                           "Po dwóch kolejnych skróconych: obie rekompensaty bez przerwy przed regularnym OT 45 h. "
-                           "Wcześniejszy zaległy termin pozostaje widoczny do wyjaśnienia historii.", last_activity, first)
+                           tr("Po dwóch kolejnych skróconych: obie rekompensaty bez przerwy przed regularnym OT 45 h. "
+                           "Wcześniejszy zaległy termin pozostaje widoczny do wyjaśnienia historii."), last_activity, first)
     # Single-reduction deadlines remain separate from the next weekly deadline.
     # Never move the next OT merely because an unrelated old debt is overdue.
     verified = options.verified_revision == history_revision(scenario)
     if not verified and not _complete(full, midnight(first), last_activity or reference):
-        return result(start, deadline, 0, "unknown", "Brak pełnej historii odpoczynków w ruchomym oknie 4 tygodni. Uzupełnij ją lub potwierdź kompletność.", last_activity, first)
+        return result(start, deadline, 0, "unknown", tr("Brak pełnej historii odpoczynków w ruchomym oknie 4 tygodni. Uzupełnij ją lub potwierdź kompletność."), last_activity, first)
     status, reason = _permissions(weekly, deadline, full, options)
     if late_paid:
-        reason += " W historii rekompensata została oddana po terminie."
+        reason += tr(" W historii rekompensata została oddana po terminie.")
     overdue = [d for d in pending if not d.from_pm_pair and d.deadline <= deadline]
     if overdue:
         status = "unknown" if status != "no" else status
-        reason += " Do wyjaśnienia pozostaje termin wcześniejszej rekompensaty."
+        reason += tr(" Do wyjaśnienia pozostaje termin wcześniejszej rekompensaty.")
     return result(start, deadline, 0, status, reason, last_activity, first)

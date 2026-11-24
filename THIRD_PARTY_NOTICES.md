@@ -31,6 +31,8 @@ Boundaries are approximate and are not evidence of a driver's location.
 Python, Qt/PySide6 (including Qt PDF), ReportLab, pypdf, Pillow, cryptography, openpyxl, xlrd,
 platformdirs, httpx, requests and Google/Firebase libraries retain their own
 licenses. Android, Kotlin, AndroidX, Compose and Firebase SDKs retain theirs.
+Portable backups use py7zr (LGPL-2.1-or-later) and its compression dependencies;
+their license texts are retained in the packaged distribution metadata.
 MIT applies to Spedi's original code; it does not replace dependency licenses.
 Binary distributors must retain applicable dependency notices and comply with
 their licenses, including Qt/PySide6 licensing requirements.

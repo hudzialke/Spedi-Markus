@@ -387,21 +387,17 @@ def test_zero_updated_rows_is_not_saved_as_success(job, values):
 
 
 def test_oauth_uses_browser_pkce_and_file_scope(job, monkeypatch):
-    from google_auth_oauthlib.flow import InstalledAppFlow
+    from spedi import google_oauth
     google_connection.save_settings({'client': {'installed': {}}, 'project_number': '123'})
     class Credentials:
         def to_json(self):
             return '{"refresh_token":"TEST_ONLY"}'
-    class Flow:
-        def run_local_server(self, **kwargs):
-            assert kwargs['host'] == '127.0.0.1' and kwargs['port'] == 0
-            assert kwargs['timeout_seconds'] == 180 and kwargs['open_browser']
-            return Credentials()
     def factory(client, scopes, **kwargs):
         assert scopes == ['https://www.googleapis.com/auth/drive.file']
-        assert kwargs['autogenerate_code_verifier'] is True
-        return Flow()
-    monkeypatch.setattr(InstalledAppFlow, 'from_client_config', factory)
+        assert kwargs['timeout_seconds'] == 180
+        assert not kwargs['cancelled']()
+        return Credentials()
+    monkeypatch.setattr(google_oauth, 'authorize_desktop', factory)
     google_connection.connect()
     assert google_connection.settings()['credentials']['refresh_token'] == 'TEST_ONLY'
 

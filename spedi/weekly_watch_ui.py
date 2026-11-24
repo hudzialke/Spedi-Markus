@@ -456,6 +456,10 @@ def install_watchlist(brudnopis):
     action.setObjectName("WeeklyWatchAction")
     action.setToolTip(_tr("Wybrani kierowcy: termin powrotu do domu / bazy, rekompensaty i kolejny OT"))
     action.triggered.connect(lambda: open_watchlist(brudnopis))
+    if menu := getattr(brudnopis, '_ddd_menu', None):
+        menu.addSeparator()
+        menu.addAction(action)
+        return action
     toolbars = brudnopis.findChildren(QToolBar, options=Qt.FindChildOption.FindDirectChildrenOnly)
     if toolbars:
         toolbar = toolbars[0]

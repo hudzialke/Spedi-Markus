@@ -1,6 +1,8 @@
 """Desktop OAuth and Windows protected credentials. No credentials in job archives."""
 from __future__ import annotations
 
+from spedi.i18n import tr
+
 import ctypes
 from ctypes import wintypes
 import json
@@ -18,7 +20,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 def _crypt(data: bytes, *, decrypt: bool = False) -> bytes:
     if os.name != 'nt':
-        raise RuntimeError('Bezpieczne przechowywanie połączenia wymaga Windows.')
+        raise RuntimeError(tr('Bezpieczne przechowywanie połączenia wymaga Windows.'))
     class Blob(ctypes.Structure):
         _fields_ = [('size', wintypes.DWORD), ('data', ctypes.POINTER(ctypes.c_ubyte))]
     buf = ctypes.create_string_buffer(data)
@@ -33,7 +35,7 @@ def _crypt(data: bytes, *, decrypt: bool = False) -> bytes:
                    ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(Blob)]
     fn.restype = wintypes.BOOL
     if not fn(ctypes.byref(source), None, None, None, None, 1, ctypes.byref(output)):
-        raise RuntimeError('Windows nie może odczytać/zabezpieczyć połączenia Google. Połącz ponownie.')
+        raise RuntimeError(tr('Windows nie może odczytać/zabezpieczyć połączenia Google. Połącz ponownie.'))
     try:
         return ctypes.string_at(output.data, output.size)
     finally:
@@ -61,24 +63,20 @@ def configure(client_file: str, api_key: str, project_number: str) -> None:
     client = json.loads(Path(client_file).read_text(encoding='utf-8-sig'))
     installed = client.get('installed', {})
     if not installed.get('client_id', '').endswith('.apps.googleusercontent.com'):
-        raise ValueError('Wybierz plik klienta OAuth typu „Aplikacja komputerowa”.')
+        raise ValueError(tr('Wybierz plik klienta OAuth typu „Aplikacja komputerowa”.'))
     if installed.get('auth_uri') != 'https://accounts.google.com/o/oauth2/auth' or installed.get('token_uri') != 'https://oauth2.googleapis.com/token':
-        raise ValueError('Plik OAuth ma nieprawidłowe adresy Google.')
+        raise ValueError(tr('Plik OAuth ma nieprawidłowe adresy Google.'))
     if not api_key.strip() or not project_number.strip().isdigit():
-        raise ValueError('Podaj klucz Google Picker i numer projektu Google Cloud.')
+        raise ValueError(tr('Podaj klucz Google Picker i numer projektu Google Cloud.'))
     save_settings(dict(client=client, api_key=api_key.strip(), project_number=project_number.strip()))
 
 
-def connect() -> None:
-    from google_auth_oauthlib.flow import InstalledAppFlow
+def connect(*, cancelled=lambda: False, timeout_seconds=180) -> None:
+    from spedi.google_oauth import authorize_desktop
     data = settings()
     if not data.get('client'):
-        raise ValueError('Najpierw skonfiguruj dostęp Google.')
-    flow = InstalledAppFlow.from_client_config(data['client'], SCOPES, autogenerate_code_verifier=True)
-    credentials = flow.run_local_server(
-        host='127.0.0.1', port=0, open_browser=True, timeout_seconds=180,
-        authorization_prompt_message='', success_message='Połączono. Możesz wrócić do Dispatchera.',
-        access_type='offline', prompt='consent')
+        raise ValueError(tr('Najpierw skonfiguruj dostęp Google.'))
+    credentials = authorize_desktop(data['client'], SCOPES, cancelled=cancelled, timeout_seconds=timeout_seconds)
     data['credentials'] = json.loads(credentials.to_json())
     save_settings(data)
 
@@ -94,7 +92,7 @@ def access_token() -> str:
     from google.auth.transport.requests import Request
     data = settings()
     if not data.get('credentials'):
-        raise ValueError('Kliknij „Połącz z Google” i zaloguj się w przeglądarce.')
+        raise ValueError(tr('Kliknij „Połącz z Google” i zaloguj się w przeglądarce.'))
     credentials = Credentials.from_authorized_user_info(data['credentials'], SCOPES)
     if not credentials.valid:
         credentials.refresh(Request())
@@ -175,5 +173,5 @@ document.getElementById('status').textContent='Możesz wrócić do Dispatchera.'
         while not result and time.monotonic() < deadline:
             server.handle_request()
     if not result:
-        raise ValueError('Upłynął czas wyboru arkusza. Spróbuj ponownie.')
+        raise ValueError(tr('Upłynął czas wyboru arkusza. Spróbuj ponownie.'))
     return result[0]

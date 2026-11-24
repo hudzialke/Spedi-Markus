@@ -16,8 +16,15 @@ work/
 research/
 *.egg-info/
 *.sqlite*
+*.SQLITE*
 *.db
+*.DB
 *.db-*
+*.7z
+*.zip
+*.bak
+*.backup
+backups/
 *.ddd
 *.DDD
 *.log

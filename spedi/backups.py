@@ -1,7 +1,10 @@
 """Local, verified backups. Never reads application storage merely on import."""
 from __future__ import annotations
 
+from spedi.i18n import tr
+
 from contextlib import closing
+import io
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,9 +14,10 @@ import shutil
 import sqlite3
 import tempfile
 from uuid import uuid4
-from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from spedi import __version__
+from spedi.backup_archive import open_backup
 
 _DATABASES = {'.db', '.sqlite', '.sqlite3'}
 _SKIP_DIRS = {'backups', 'firebase', '__pycache__', 'cache', 'logs'}
@@ -45,48 +49,60 @@ def _write_json(path, data):
 def _safe_name(name):
     path = PurePosixPath(name)
     if path.is_absolute() or not path.parts or '\\' in name or path.as_posix() != name:
-        raise ValueError('Nieprawidłowa ścieżka w kopii.')
+        raise ValueError(tr('Nieprawidłowa ścieżka w kopii.'))
     for part in path.parts:
         if (part in {'.', '..'} or part.endswith(('.', ' '))
                 or any(ord(c) < 32 or c in '<>:"|?*' for c in part)
                 or part.split('.')[0].upper() in {'CON', 'PRN', 'AUX', 'NUL',
                     *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}):
-            raise ValueError('Nieprawidłowa ścieżka w kopii.')
+            raise ValueError(tr('Nieprawidłowa ścieżka w kopii.'))
     return path
+
+
+def _walk_error(error):
+    raise error
 
 
 class BackupManager:
     def __init__(self, sources, directory):
         self.sources = {key: Path(value).resolve() for key, value in sources.items()}
         if any(not key or '/' in key or '\\' in key or key in {'.', '..'} for key in self.sources):
-            raise ValueError('Nieprawidłowy katalog danych.')
+            raise ValueError(tr('Nieprawidłowy katalog danych.'))
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.pending = self.directory/'pending-restore.json'
         self.journal = self.directory/'restore-journal.json'
+        self._metadata_cache = {}
 
-    def _target(self, name):
+    def _target(self, name, *, filesystem=True):
         parts = _safe_name(name).parts
         if len(parts) < 2 or parts[0] not in self.sources or {p.casefold() for p in parts[1:]} & _SKIP_DIRS:
-            raise ValueError('Kopia zawiera nieobsługiwany katalog.')
+            raise ValueError(tr('Kopia zawiera nieobsługiwany katalog.'))
         root = self.sources[parts[0]]
         target = root.joinpath(*parts[1:])
+        if _private(target):
+            raise ValueError(tr('Nieprawidłowy cel przywracania.'))
+        if not filesystem:
+            # Listing is read-only. Validate names now; resolve every real target
+            # again during full verification and immediately before installing.
+            return target
         for parent in (target, *target.parents):
             if parent == root.parent:
                 break
-            if parent.is_symlink():
-                raise ValueError('Kopia nie obsługuje dowiązań.')
+            if parent.is_symlink() or parent.is_junction():
+                raise ValueError(tr('Kopia nie obsługuje dowiązań.'))
         if not target.resolve().is_relative_to(root) or target.is_dir() or _private(target):
-            raise ValueError('Nieprawidłowy cel przywracania.')
+            raise ValueError(tr('Nieprawidłowy cel przywracania.'))
         return target
 
-    def create(self, reason='manual', *, documents=True, cancelled=lambda: False):
+    def create(self, reason='manual', *, documents=True, cancelled=lambda: False, excluded_paths=()):
         if reason not in _REASONS:
-            raise ValueError('Nieznany rodzaj kopii.')
+            raise ValueError(tr('Nieznany rodzaj kopii.'))
         identifier = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')+'-'+uuid4().hex[:10]
         destination = self.directory/f'spedi-backup-{identifier}.zip'
         temporary = destination.with_suffix('.partial')
         entries = []
+        excluded = {Path(p).resolve() for p in excluded_paths}
         total_bytes = 0
         try:
             with tempfile.TemporaryDirectory(dir=self.directory, prefix='.snapshot-') as scratch:
@@ -94,17 +110,21 @@ class BackupManager:
                     for label, root in self.sources.items():
                         if not root.is_dir():
                             continue
-                        for folder, dirs, files in os.walk(root, followlinks=False):
+                        for folder, dirs, files in os.walk(root, followlinks=False, onerror=_walk_error):
                             dirs[:] = [d for d in sorted(dirs) if d.casefold() not in _SKIP_DIRS
-                                       and not (Path(folder)/d).is_symlink()
                                        and (Path(folder)/d).resolve() != self.directory]
+                            if any((Path(folder)/d).is_symlink() or (Path(folder)/d).is_junction() for d in dirs):
+                                raise ValueError(tr('Kopia nie obsługuje dowiązań w katalogu danych.'))
                             for filename in sorted(files):
                                 if cancelled():
-                                    raise InterruptedError('Anulowano tworzenie kopii.')
+                                    raise InterruptedError(tr('Anulowano tworzenie kopii.'))
                                 path = Path(folder)/filename
-                                if (path.is_symlink() or _private(path)
+                                if (path.resolve() in excluded or _private(path)
+                                        or (path.name.startswith('spedi-backup-') and path.suffix.lower() in {'.zip', '.7z'})
                                         or path.name.endswith(('-wal', '-shm', '-journal'))):
                                     continue
+                                if path.is_symlink() or path.is_junction():
+                                    raise ValueError(tr('Kopia nie obsługuje dowiązań w katalogu danych.'))
                                 database = path.suffix.lower() in _DATABASES
                                 if not documents and not database:
                                     continue
@@ -113,7 +133,7 @@ class BackupManager:
                                 if database and wal.exists():
                                     raw_size += wal.stat().st_size
                                 if shutil.disk_usage(self.directory).free < raw_size*(2 if database else 1)+512*1024**2:
-                                    raise OSError('Za mało wolnego miejsca na bezpieczną kopię danych.')
+                                    raise OSError(tr('Za mało wolnego miejsca na bezpieczną kopię danych.'))
                                 name = label+'/'+path.relative_to(root).as_posix()
                                 _safe_name(name)
                                 source = path
@@ -121,31 +141,34 @@ class BackupManager:
                                     source = Path(scratch)/f'{len(entries)}.sqlite'
                                     def progress(*_):
                                         if cancelled():
-                                            raise InterruptedError('Anulowano tworzenie kopii.')
+                                            raise InterruptedError(tr('Anulowano tworzenie kopii.'))
                                     with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as src:
                                         with closing(sqlite3.connect(source)) as dst:
                                             src.backup(dst, pages=256, progress=progress, sleep=.02)
+                                            if dst.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                                                raise ValueError(tr('Baza danych jest uszkodzona.'))
                                 before = source.stat()
                                 if len(entries) >= 100_000 or total_bytes+before.st_size > _MAX_BYTES:
-                                    raise ValueError('Kopia przekracza limit rozmiaru.')
+                                    raise ValueError(tr('Kopia przekracza limit rozmiaru.'))
                                 digest = hashlib.sha256()
                                 size = 0
                                 with source.open('rb') as stream, archive.open(name, 'w', force_zip64=True) as output:
                                     for block in iter(lambda: stream.read(1024**2), b''):
                                         if cancelled():
-                                            raise InterruptedError('Anulowano tworzenie kopii.')
+                                            raise InterruptedError(tr('Anulowano tworzenie kopii.'))
                                         output.write(block)
                                         digest.update(block)
                                         size += len(block)
                                 after = source.stat()
                                 if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                                    raise RuntimeError('Plik zmienił się podczas kopiowania. Ponów kopię.')
+                                    raise RuntimeError(tr('Plik zmienił się podczas kopiowania. Ponów kopię.'))
                                 entries.append({'name': name, 'bytes': size, 'sha256': digest.hexdigest(),
                                                 'database': database})
                                 total_bytes += size
                     manifest = {'format': 1, 'app_version': __version__, 'reason': reason,
                                 'created_at': datetime.now(timezone.utc).isoformat(),
-                                'documents': documents, 'files': entries}
+                                'documents': documents, 'files': entries,
+                                'source_roots': {key: str(root) for key, root in self.sources.items()}}
                     archive.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False))
             temporary.replace(destination)
             self.prune()
@@ -154,49 +177,115 @@ class BackupManager:
             temporary.unlink(missing_ok=True)
             raise
 
-    def inspect(self, path, *, verify=False):
-        with ZipFile(path) as archive:
-            infos = archive.infolist()
-            if len(infos) > 100_001 or sum(info.file_size for info in infos) > _MAX_BYTES:
-                raise ValueError('Kopia przekracza limit rozmiaru.')
-            if len({info.filename.casefold() for info in infos}) != len(infos):
-                raise ValueError('Kopia zawiera powtarzające się ścieżki.')
-            if archive.getinfo('manifest.json').file_size > 20 * 1024**2:
-                raise ValueError('Zbyt duży opis kopii.')
-            manifest = json.loads(archive.read('manifest.json'))
-            if manifest.get('format') != 1 or not isinstance(manifest.get('files'), list):
-                raise ValueError('Nieobsługiwany format kopii.')
-            if manifest.get('reason') not in _REASONS or type(manifest.get('documents')) is not bool:
-                raise ValueError('Nieprawidłowy opis kopii.')
-            datetime.fromisoformat(manifest['created_at'])
-            files = manifest['files']
-            if len({item['name'].casefold() for item in files}) != len(files):
-                raise ValueError('Kopia zawiera powtarzające się ścieżki.')
-            if {info.filename for info in infos} != {'manifest.json', *(item['name'] for item in files)}:
-                raise ValueError('Zawartość kopii nie zgadza się z opisem.')
-            for item in files:
-                target = self._target(item['name'])
-                info = archive.getinfo(item['name'])
-                if (info.file_size != item['bytes'] or ((info.external_attr >> 16) & 0o170000) == 0o120000
-                        or bool(item['database']) != (target.suffix.lower() in _DATABASES)):
-                    raise ValueError('Nieprawidłowy opis pliku w kopii.')
-                if verify:
+    def export_all(self, destination, *, cancelled=lambda: False):
+        """Create a consistent snapshot, compress with LZMA2, then verify every byte."""
+        import py7zr
+        destination = Path(destination).resolve()
+        if destination.suffix.lower() != '.7z':
+            raise ValueError(tr('Wybierz nazwę z rozszerzeniem .7z.'))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name('.'+destination.name+'.'+uuid4().hex+'.partial')
+
+        class Reader(io.BufferedIOBase):
+            def __init__(self, stream):
+                self.stream = stream
+
+            def read(self, size=-1):
+                if cancelled():
+                    raise InterruptedError(tr('Anulowano tworzenie kopii.'))
+                return self.stream.read(size)
+
+            def tell(self):
+                return self.stream.tell()
+
+            def seek(self, offset, whence=0):
+                return self.stream.seek(offset, whence)
+
+        try:
+            with tempfile.TemporaryDirectory(dir=self.directory, prefix='.export-') as scratch:
+                snapshot = BackupManager(self.sources, scratch).create(cancelled=cancelled, excluded_paths=(destination, temporary))
+                if shutil.disk_usage(destination.parent).free < snapshot.stat().st_size + 64*1024**2:
+                    raise OSError(tr('Za mało miejsca w wybranym folderze.'))
+                with ZipFile(snapshot) as source, py7zr.SevenZipFile(
+                    temporary, 'w', filters=[{'id': py7zr.FILTER_LZMA2, 'preset': 7}]
+                ) as output:
+                    # A small manifest first also makes listing solid archives fast.
+                    for name in ['manifest.json', *(n for n in source.namelist() if n != 'manifest.json')]:
+                        with source.open(name) as stream:
+                            output.writef(Reader(stream), name)
+                self.inspect(temporary, verify=True, cancelled=cancelled)
+                if cancelled():
+                    raise InterruptedError(tr('Anulowano tworzenie kopii.'))
+                temporary.replace(destination)
+                return destination
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def inspect(self, path, *, verify=False, cancelled=lambda: False):
+        with open_backup(path, extract=verify, verify_only=verify, cancelled=cancelled) as archive:
+            return self._inspect_archive(archive, verify=verify, cancelled=cancelled)
+
+    def _inspect_archive(self, archive, *, verify=False, cancelled=lambda: False):
+        infos = archive.infolist()
+        if len(infos) > 100_001 or sum(info.file_size for info in infos) > _MAX_BYTES:
+            raise ValueError(tr('Kopia przekracza limit rozmiaru.'))
+        if len({info.filename.casefold() for info in infos}) != len(infos):
+            raise ValueError(tr('Kopia zawiera powtarzające się ścieżki.'))
+        if archive.getinfo('manifest.json').file_size > 20 * 1024**2:
+            raise ValueError(tr('Zbyt duży opis kopii.'))
+        manifest = json.loads(archive.read('manifest.json'))
+        if manifest.get('format') != 1 or not isinstance(manifest.get('files'), list):
+            raise ValueError(tr('Nieobsługiwany format kopii.'))
+        if manifest.get('reason') not in _REASONS or type(manifest.get('documents')) is not bool:
+            raise ValueError(tr('Nieprawidłowy opis kopii.'))
+        datetime.fromisoformat(manifest['created_at'])
+        files = manifest['files']
+        if len({item['name'].casefold() for item in files}) != len(files):
+            raise ValueError(tr('Kopia zawiera powtarzające się ścieżki.'))
+        if {info.filename for info in infos} != {'manifest.json', *(item['name'] for item in files)}:
+            raise ValueError(tr('Zawartość kopii nie zgadza się z opisem.'))
+        for item in files:
+            target = self._target(item['name'], filesystem=verify)
+            info = archive.getinfo(item['name'])
+            if (info.file_size != item['bytes'] or ((info.external_attr >> 16) & 0o170000) == 0o120000
+                    or bool(item['database']) != (target.suffix.lower() in _DATABASES)):
+                raise ValueError(tr('Nieprawidłowy opis pliku w kopii.'))
+            if verify:
+                actual = getattr(archive, 'hashes', {}).get(item['name'])
+                if actual is None:
                     digest = hashlib.sha256()
                     with archive.open(info) as stream:
                         for block in iter(lambda: stream.read(1024**2), b''):
                             digest.update(block)
-                    if digest.hexdigest() != item['sha256']:
-                        raise ValueError('Suma kontrolna kopii jest nieprawidłowa.')
-            return manifest
+                            if cancelled():
+                                raise InterruptedError(tr('Anulowano sprawdzanie kopii.'))
+                    actual = digest.hexdigest()
+                if actual != item['sha256']:
+                    raise ValueError(tr('Suma kontrolna kopii jest nieprawidłowa.'))
+        return manifest
 
-    def list_backups(self):
+    def list_backups(self, directory=None):
         result = []
-        for path in self.directory.glob('spedi-backup-*.zip'):
+        for path in Path(directory or self.directory).glob('spedi-backup-*'):
+            if path.suffix.lower() not in {'.zip', '.7z'}:
+                continue
             try:
-                data = self.inspect(path)
+                stat = path.stat()
+                identity = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+                cached = self._metadata_cache.get(path)
+                if cached and cached[0] == identity:
+                    data = cached[1]
+                else:
+                    manifest = self.inspect(path)
+                    data = {key: manifest[key] for key in ('created_at', 'reason', 'documents')}
+                self._metadata_cache[path] = (identity, data)
+                if len(self._metadata_cache) > 256:
+                    self._metadata_cache.pop(next(iter(self._metadata_cache)))
                 result.append({'path': path, **{key: data[key] for key in ('created_at', 'reason', 'documents')},
                                'bytes': path.stat().st_size})
-            except (OSError, ValueError, KeyError, BadZipFile, RuntimeError):
+            except Exception:
+                # A damaged archive must not hide the remaining valid backups.
+                self._metadata_cache.pop(path, None)
                 continue
         return sorted(result, key=lambda item: item['created_at'], reverse=True)
 
@@ -222,16 +311,35 @@ class BackupManager:
     def schedule_restore(self, path):
         path = Path(path).resolve()
         self.inspect(path, verify=True)
-        if path.parent != self.directory:
+        if path.is_dir():
             imported = self.directory/f'spedi-backup-imported-{uuid4().hex}.zip'
-            shutil.copy2(path, imported)
-            path = imported
+            try:
+                with open_backup(path) as source, ZipFile(imported, 'w', compression=ZIP_DEFLATED) as output:
+                    for info in source.infolist():
+                        with source.open(info) as stream, output.open(info.filename, 'w', force_zip64=True) as target:
+                            shutil.copyfileobj(stream, target, length=1024**2)
+                self.inspect(imported, verify=True)
+                path = imported
+            except BaseException:
+                imported.unlink(missing_ok=True)
+                raise
+        if path.parent != self.directory:
+            with path.open('rb') as stream:
+                suffix = '.7z' if stream.read(6) == b'7z\xbc\xaf\x27\x1c' else '.zip'
+            imported = self.directory/f'spedi-backup-imported-{uuid4().hex}{suffix}'
+            try:
+                shutil.copy2(path, imported)
+                self.inspect(imported, verify=True)
+                path = imported
+            except BaseException:
+                imported.unlink(missing_ok=True)
+                raise
         _write_json(self.pending, {'archive': path.name, 'sha256': _digest(path)})
 
     def _install(self, path):
-        manifest = self.inspect(path, verify=True)
         with tempfile.TemporaryDirectory(dir=self.directory, prefix='.restore-') as scratch:
-            with ZipFile(path) as archive:
+            with open_backup(path) as archive:
+                manifest = self._inspect_archive(archive, verify=True)
                 for index, item in enumerate(manifest['files']):
                     target = self._target(item['name'])
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -239,9 +347,10 @@ class BackupManager:
                     with archive.open(item['name']) as source, staged.open('wb') as output:
                         shutil.copyfileobj(source, output, length=1024**2)
                     if item['database']:
+                        self._relocate_database(staged, manifest)
                         with closing(sqlite3.connect(staged.as_uri()+'?mode=ro', uri=True)) as source:
                             if source.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
-                                raise ValueError('Baza w kopii jest uszkodzona.')
+                                raise ValueError(tr('Baza w kopii jest uszkodzona.'))
                             with closing(sqlite3.connect(target)) as dest:
                                 source.backup(dest)
                     else:
@@ -251,6 +360,27 @@ class BackupManager:
                             sibling.replace(target)
                         finally:
                             sibling.unlink(missing_ok=True)
+
+    def _relocate_database(self, path, manifest):
+        """Rebase managed DDD / attachment paths when moving to another computer."""
+        roots = manifest.get('source_roots', {})
+        names = {item['name'] for item in manifest['files']}
+        with closing(sqlite3.connect(path)) as conn:
+            for table in ('archived_files', 'attachments'):
+                columns = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+                if not {'id', 'stored_path'} <= columns:
+                    continue
+                for identifier, stored in conn.execute(f'SELECT id, stored_path FROM {table}').fetchall():
+                    normal = str(stored).replace('\\', '/')
+                    for label, root in roots.items():
+                        prefix = str(root).replace('\\', '/').rstrip('/')+'/'
+                        if label in self.sources and normal.casefold().startswith(prefix.casefold()):
+                            name = label+'/'+normal[len(prefix):]
+                            if name in names:
+                                conn.execute(f'UPDATE {table} SET stored_path=? WHERE id=?',
+                                             (str(self._target(name)), identifier))
+                            break
+            conn.commit()
 
     def apply_pending(self):
         """Only before stores/widgets open. Interrupted attempts roll back first."""
@@ -268,7 +398,7 @@ class BackupManager:
         plan = json.loads(self.pending.read_text(encoding='utf-8'))
         path = self.directory/_safe_name(plan['archive']).name
         if _digest(path) != plan['sha256']:
-            raise ValueError('Wybrana kopia zmieniła się od momentu wyboru.')
+            raise ValueError(tr('Wybrana kopia zmieniła się od momentu wyboru.'))
         manifest = self.inspect(path, verify=True)
         before = self.create('before_restore', documents=manifest['documents'])
         journal = {'before': before.name, 'introduced': [item['name'] for item in manifest['files']
@@ -290,7 +420,8 @@ def application_backups():
     from spedi.paths import data_dir
     from markus_dispatcher import config
     root = data_dir()
-    return BackupManager({'spedi': root, 'dispatcher': config.DATA_DIR}, root/'backups')
+    return BackupManager({'spedi': root, 'dispatcher': config.DATA_DIR,
+                          'scenarios': root.parent/'scenariusze', 'reports': root.parent/'raporty'}, root/'backups')
 
 
 def before_profile_import(store, *, cancelled=lambda: False):

@@ -8,6 +8,49 @@ from pathlib import Path
 import tempfile
 
 
+def _check_google_loopback():
+    """Exercise the EXE's local OAuth listener without Google or real credentials."""
+    import http.client
+    from types import SimpleNamespace
+    from urllib.parse import urlsplit
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from spedi import google_oauth
+
+    class Flow:
+        redirect_uri = None
+        credentials = SimpleNamespace(token='SYNTHETIC')
+
+        def authorization_url(self, **kwargs):
+            return 'https://accounts.google.com/synthetic', 'synthetic-state'
+
+        def fetch_token(self, **kwargs):
+            assert 'state=synthetic-state' in kwargs['authorization_response']
+            assert 'code=synthetic-code' in kwargs['authorization_response']
+
+    flow = Flow()
+    factory, opener = InstalledAppFlow.from_client_config, google_oauth.webbrowser.open
+    def browse(*args, **kwargs):
+        address = urlsplit(flow.redirect_uri)
+        connection = http.client.HTTPConnection(address.hostname, address.port, timeout=5)
+        try:
+            for path, status in (('/favicon.ico', 404), ('/', 200),
+                                 ('/?state=synthetic-state&code=synthetic-code', 200)):
+                connection.request('GET', path)
+                response = connection.getresponse()
+                assert response.status == status
+                response.read()
+        finally:
+            connection.close()
+        return True
+    try:
+        InstalledAppFlow.from_client_config = lambda *args, **kwargs: flow
+        google_oauth.webbrowser.open = browse
+        assert google_oauth.authorize_desktop({'installed': {}}, [], timeout_seconds=5) is flow.credentials
+    finally:
+        InstalledAppFlow.from_client_config = factory
+        google_oauth.webbrowser.open = opener
+
+
 def run(report_path: str) -> int:
     from spedi import __version__
 
@@ -41,6 +84,8 @@ def run(report_path: str) -> int:
             from PIL import Image, ImageDraw, ImageFont
 
             app = QApplication.instance() or QApplication([])
+            _check_google_loopback()
+            report['checks'].append('desktop-google-oauth-loopback')
             pdf_path = root / 'synthetic.pdf'
             canvas = Canvas(str(pdf_path), pagesize=(600, 800))
             for x, y, text in ((50, 700, 'LOAD DEMO'), (340, 700, 'UNLOAD DEMO'),
@@ -244,6 +289,10 @@ def run(report_path: str) -> int:
             manager = BackupManager({'spedi': tools_root}, tools_root/'backups')
             archive = manager.create(documents=False)
             manager.inspect(archive, verify=True)
+            portable = manager.export_all(tools_root/'synthetic.7z')
+            manager.inspect(portable, verify=True)
+            manager.schedule_restore(portable)
+            assert manager.apply_pending() == 'restored'
             manager.schedule_restore(archive)
             assert manager.apply_pending() == 'restored'
             from spedi.backup_ui import BackupDialog

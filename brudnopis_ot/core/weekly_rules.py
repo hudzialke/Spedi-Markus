@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from spedi.i18n import tr
+
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -70,11 +72,11 @@ def classify_rest_hours(duration_hours: float) -> WeeklyRestClass:
 def rest_label(classification: WeeklyRestClass, duration_hours: float) -> str:
     hm = format_duration_hm(duration_hours)
     if classification == "regular":
-        return f"h(45) {hm}"
+        return tr('h(45) {v0}').format(v0=f'{hm}')
     if classification == "reduced":
-        return f"h(24) {hm}"
+        return tr('h(24) {v0}').format(v0=f'{hm}')
     if classification == "too_short":
-        return f"odpoczynek {hm}"
+        return tr('odpoczynek {v0}').format(v0=f'{hm}')
     return hm
 
 
@@ -251,7 +253,7 @@ def _rest_anchor_label(period: WeeklyRestPeriod) -> str:
         return "OT"
     if period.classification == "reduced":
         return "odpoczynku"
-    return "OD (≥9h)"
+    return tr('OD (≥9h)')
 
 
 def analyze_scenario(
@@ -293,10 +295,7 @@ def analyze_scenario(
                         severity="violation",
                         code="six_x_24h",
                         message_pl=(
-                            f"OT musi rozpocząć się najpóźniej "
-                            f"{fmt(deadline)} "
-                            f"(6×24h od końca poprzedniego OT "
-                            f"{fmt(prev.end)})."
+                            tr('OT musi rozpocząć się najpóźniej {v0} (6×24h od końca poprzedniego OT {v1}).').format(v0=f'{fmt(deadline)}', v1=f'{fmt(prev.end)}')
                         ),
                         related_block_ids=curr.block_ids + prev.block_ids,
                         underline_range=TimeRange(start=deadline, end=curr.start),
@@ -304,8 +303,7 @@ def analyze_scenario(
                 )
             else:
                 hints.append(
-                    f"Max. 6×24h: {fmt(prev.end, short=True)} → "
-                    f"deadline {fmt(deadline, short=True)}"
+                    tr('Max. 6×24h: {v0} → deadline {v1}').format(v0=f'{fmt(prev.end, short=True)}', v1=f'{fmt(deadline, short=True)}')
                 )
 
         # Open window after the last weekly rest (even if next OT has not started yet)
@@ -313,12 +311,10 @@ def analyze_scenario(
         open_deadline = last.end + SIX_DAYS
         six_windows.append(TimeRange(start=last.end, end=open_deadline))
         hints.append(
-            f"Max. 6×24h (otwarte): {fmt(last.end, short=True)} → "
-            f"deadline {fmt(open_deadline, short=True)}"
+            tr('Max. 6×24h (otwarte): {v0} → deadline {v1}').format(v0=f'{fmt(last.end, short=True)}', v1=f'{fmt(open_deadline, short=True)}')
         )
         hints.append(
-            f"Kolejny OT najpóźniej do {fmt(open_deadline, short=True)} "
-            f"(koniec poprzedniego OT {fmt(last.end, short=True)})."
+            tr('Kolejny OT najpóźniej do {v0} (koniec poprzedniego OT {v1}).').format(v0=f'{fmt(open_deadline, short=True)}', v1=f'{fmt(last.end, short=True)}')
         )
 
     # Kotwica „start”: gdy brak OT w danych, okno 6×24h liczymy od startu bloku-kotwicy
@@ -333,12 +329,10 @@ def analyze_scenario(
                 open_deadline = ref + SIX_DAYS
                 six_windows.append(TimeRange(start=ref, end=open_deadline))
                 hints.append(
-                    f"Max. 6×24h (od startu): {fmt(ref, short=True)} → "
-                    f"deadline {fmt(open_deadline, short=True)}"
+                    tr('Max. 6×24h (od startu): {v0} → deadline {v1}').format(v0=f'{fmt(ref, short=True)}', v1=f'{fmt(open_deadline, short=True)}')
                 )
                 hints.append(
-                    f"Kolejny OT najpóźniej do {fmt(open_deadline, short=True)} "
-                    f"(kotwica start {fmt(ref, short=True)})."
+                    tr('Kolejny OT najpóźniej do {v0} (kotwica start {v1}).').format(v0=f'{fmt(open_deadline, short=True)}', v1=f'{fmt(ref, short=True)}')
                 )
 
     # Too-short rests flagged only if >= 24 expected context — skip daily rests.
@@ -367,8 +361,7 @@ def analyze_scenario(
             )
         )
         hints.append(
-            f"Pakiet mobilności: dwa skrócone OT "
-            f"({fmt_day(a.start)} + {fmt_day(b.start)}) rozpoczęte za granicą."
+            tr('Pakiet mobilności: dwa skrócone OT ({v0} + {v1}) rozpoczęte za granicą.').format(v0=f'{fmt_day(a.start)}', v1=f'{fmt_day(b.start)}')
         )
         # In any four consecutive weeks covering the pair: >=4 OT and >=2 regular
         window_start = a.start
@@ -381,8 +374,7 @@ def analyze_scenario(
                     severity="warning",
                     code="pm_four_rests",
                     message_pl=(
-                        "Pakiet mobilności: w ciągu 4 tygodni od pierwszego z dwóch "
-                        f"skróconych OT powinno być co najmniej 4 OT (jest {len(in_window)})."
+                        tr('Pakiet mobilności: w ciągu 4 tygodni od pierwszego z dwóch skróconych OT powinno być co najmniej 4 OT (jest {v0}).').format(v0=f'{len(in_window)}')
                     ),
                     related_block_ids=a.block_ids + b.block_ids,
                 )
@@ -393,8 +385,7 @@ def analyze_scenario(
                     severity="violation",
                     code="pm_two_regular",
                     message_pl=(
-                        "Pakiet mobilności: w oknie 4 tygodni wymagane są co najmniej "
-                        f"dwa regularne OT 45h (jest {len(regulars)})."
+                        tr('Pakiet mobilności: w oknie 4 tygodni wymagane są co najmniej dwa regularne OT 45h (jest {v0}).').format(v0=f'{len(regulars)}')
                     ),
                     related_block_ids=a.block_ids + b.block_ids,
                 )
@@ -416,10 +407,7 @@ def analyze_scenario(
         consumed_pm.add(id(b))
         latest_start, regular_start_deadline, _ = pm_timing[id(b)]
         hints.append(
-            f"Rekompensata PM: {format_duration_hm(a.debt_hours)}+"
-            f"{format_duration_hm(b.debt_hours)}. Najpóźniej zakończ jazdę i rozpocznij "
-            f"rekompensaty {fmt(latest_start)}; regularne 45h musi rozpocząć się "
-            f"najpóźniej {fmt(regular_start_deadline)}."
+            tr('Rekompensata PM: {v0}+{v1}. Najpóźniej zakończ jazdę i rozpocznij rekompensaty {v2}; regularne 45h musi rozpocząć się najpóźniej {v3}.').format(v0=f'{format_duration_hm(a.debt_hours)}', v1=f'{format_duration_hm(b.debt_hours)}', v2=f'{fmt(latest_start)}', v3=f'{fmt(regular_start_deadline)}')
         )
 
     for period in weekly_all:
@@ -460,13 +448,12 @@ def analyze_scenario(
                 if debt.from_pm_pair:
                     pm_paid_by_blocks.add(period.block_ids)
                 base_note = (
-                    f" (łącznie z bazą 45h → ok. {format_duration_hm(45 + take)})"
+                    tr(' (łącznie z bazą 45h → ok. {v0})').format(v0=f'{format_duration_hm(45 + take)}')
                     if debt.from_pm_pair
                     else ""
                 )
                 hints.append(
-                    f"Oddano rekompensatę {format_duration_hm(take)} przy "
-                    f"{_rest_anchor_label(period)} {fmt(period.start)}{base_note}."
+                    tr('Oddano rekompensatę {v0} przy {v1} {v2}{v3}.').format(v0=f'{format_duration_hm(take)}', v1=f'{_rest_anchor_label(period)}', v2=f'{fmt(period.start)}', v3=f'{base_note}')
                 )
             open_debts = still
         if paid_here > 1e-6:
@@ -569,9 +556,7 @@ def analyze_scenario(
                         severity="violation",
                         code="pm_compensation_start_deadline",
                         message_pl=(
-                            f"Za późno na rozpoczęcie łącznych rekompensat {left}: "
-                            f"jazdę trzeba było zakończyć najpóźniej {fmt(debt.latest_start)}, "
-                            f"aby regularne 45h rozpoczęło się do {fmt(debt.deadline)}."
+                            tr('Za późno na rozpoczęcie łącznych rekompensat {v0}: jazdę trzeba było zakończyć najpóźniej {v1}, aby regularne 45h rozpoczęło się do {v2}.').format(v0=f'{left}', v1=f'{fmt(debt.latest_start)}', v2=f'{fmt(debt.deadline)}')
                         ),
                         related_block_ids=debt.source_rest_ids,
                         underline_range=TimeRange(
@@ -586,9 +571,7 @@ def analyze_scenario(
                         severity="warning",
                         code="pm_compensation_start_pending",
                         message_pl=(
-                            f"Najpóźniej zakończ jazdę i rozpocznij łączne rekompensaty "
-                            f"{left} dnia {fmt(debt.latest_start)}; regularne 45h musi "
-                            f"rozpocząć się do {fmt(debt.deadline)}."
+                            tr('Najpóźniej zakończ jazdę i rozpocznij łączne rekompensaty {v0} dnia {v1}; regularne 45h musi rozpocząć się do {v2}.').format(v0=f'{left}', v1=f'{fmt(debt.latest_start)}', v2=f'{fmt(debt.deadline)}')
                         ),
                         related_block_ids=debt.source_rest_ids,
                     )
@@ -600,8 +583,7 @@ def analyze_scenario(
                     severity="violation",
                     code="compensation_deadline",
                     message_pl=(
-                        f"Brak rekompensaty {left} do końca 3. tygodnia "
-                        f"(termin {fmt(debt.deadline)})."
+                        tr('Brak rekompensaty {v0} do końca 3. tygodnia (termin {v1}).').format(v0=f'{left}', v1=f'{fmt(debt.deadline)}')
                     ),
                     related_block_ids=debt.source_rest_ids,
                     underline_range=TimeRange(
@@ -616,8 +598,7 @@ def analyze_scenario(
                     severity="warning",
                     code="compensation_pending",
                     message_pl=(
-                        f"Do oddania rekompensata {left} "
-                        f"najpóźniej do {fmt(debt.deadline)}."
+                        tr('Do oddania rekompensata {v0} najpóźniej do {v1}.').format(v0=f'{left}', v1=f'{fmt(debt.deadline)}')
                     ),
                     related_block_ids=debt.source_rest_ids,
                 )
@@ -656,9 +637,7 @@ def analyze_scenario(
                     severity="violation",
                     code="two_week_pattern",
                     message_pl=(
-                        f"W tygodniach {widx + 1}–{widx + 2} brak regularnego OT 45h "
-                        f"(wymagany co najmniej jeden regularny w każdych dwóch "
-                        f"kolejnych tygodniach, poza pakietem mobilności)."
+                        tr('W tygodniach {v0}–{v1} brak regularnego OT 45h (wymagany co najmniej jeden regularny w każdych dwóch kolejnych tygodniach, poza pakietem mobilności).').format(v0=f'{widx + 1}', v1=f'{widx + 2}')
                     ),
                 )
             )
@@ -695,7 +674,7 @@ def analyze_scenario(
             Finding(
                 severity="ok",
                 code="ok",
-                message_pl="Brak naruszeń odpoczynków tygodniowych w scenariuszu.",
+                message_pl=tr('Brak naruszeń odpoczynków tygodniowych w scenariuszu.'),
             )
         )
 

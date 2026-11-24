@@ -2,6 +2,8 @@
 
 [English](README.md) · **Polski**
 
+[Changelog](CHANGELOG.md) · [Zmiany w 0.4.0](docs/releases/0.4.0.md#polski)
+
 ## Pobierz i zainstaluj (Windows 64-bit)
 
 [**Pobierz instalator Spedi**](https://github.com/hudzialke/Spedi-Markus/releases/latest/download/Spedi-Setup.exe)
@@ -45,6 +47,30 @@ dopuszczonym przez prawo.** Korzystasz z programu na własną odpowiedzialność
 Sprawdzaj wyniki i wykonuj kopie swoich danych. Program nie zastępuje porady
 prawnej ani samodzielnej kontroli zgodności z przepisami. Zmiana języka
 interfejsu nie zmienia stosowanych reguł ani strefy czasu danych tachografu.
+
+## Backup i przenoszenie danych
+
+W Brudnopisie otwórz **Edycja → Backup danych…**. Funkcja **All in** zapisuje
+pełne bazy wszystkich modułów, archiwa DDD, załączniki oraz scenariusze i raporty
+z domyślnych katalogów programu. Wybierz folder i kliknij **Zapisz 7z do folderu**
+albo **Zapisz 7z na Dysku Google**. Kompresja LZMA2 jest bezstratna; po zapisie
+program odczytuje archiwum i sprawdza SHA-256 każdego pliku. Wysyłka Google
+korzysta z istniejącego sparowania konta i zachowuje również kopię lokalną.
+Kopie w chmurze znajdują się w folderze **Spedi — backupy**.
+
+Na drugim komputerze wybierz **Wybierz plik kopii…** (`.7z` lub starszy `.zip`),
+**Wybierz rozpakowany folder…** (folder zawierający `manifest.json`) albo zakładkę
+**Google Drive → Odśwież kopie Google → Pobierz i przywróć…**. Potwierdzone
+przywrócenie nastąpi przy następnym uruchomieniu Spedi i zastąpi bazy, zachowując
+wcześniej kopię obecnego stanu. Ścieżki do archiwum DDD i załączników są
+dostosowywane do nowego komputera. Hasła, tokeny i konfiguracja usług pozostają
+poza archiwum; na drugim komputerze trzeba osobno połączyć konto Google.
+Instalacja zewnętrznego 7-Zip nie jest potrzebna.
+
+Logowanie Google z okna backupu czeka do 10 minut. Pozostaw Spedi otwarte;
+po upływie czasu rozpocznij nową próbę zamiast odświeżać starą kartę. Komunikat
+`SERVICE_DISABLED` wymaga włączenia Google Drive API w projekcie klienta OAuth.
+Samo zakończenie logowania w przeglądarce nie potwierdza jeszcze dostępu do Drive.
 
 ## Uruchomienie
 

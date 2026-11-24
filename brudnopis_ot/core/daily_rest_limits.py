@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from spedi.i18n import tr
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -91,9 +93,7 @@ def analyze_daily_reduced_9h_limits(
                     severity="violation",
                     code="daily_9h_limit",
                     message_pl=(
-                        "Dobowy odpoczynek skrócony do 9-<11h: "
-                        f"między odpoczynkami tygodniowymi wykorzystano {used} "
-                        f"(limit {MAX_REDUCED_DAILY_BETWEEN_WEEKLY})."
+                        tr('Dobowy odpoczynek skrócony do 9-<11h: między odpoczynkami tygodniowymi wykorzystano {v0} (limit {v1}).').format(v0=f'{used}', v1=f'{MAX_REDUCED_DAILY_BETWEEN_WEEKLY}')
                     ),
                     underline_range=hints_range,
                 )
@@ -122,10 +122,7 @@ def analyze_daily_reduced_9h_limits(
         remaining = max(0, remaining)
 
         hints.append(
-            "W tygodniu "
-            f"{widx + 1}: skrócony dobowy OD 9-<11h - "
-            f"wykorzystane {used_so_far}/{MAX_REDUCED_DAILY_BETWEEN_WEEKLY}, "
-            f"jeszcze {remaining}×."
+            tr('W tygodniu {v0}: skrócony dobowy OD 9-<11h - wykorzystane {v1}/{v2}, jeszcze {v3}×.').format(v0=f'{widx + 1}', v1=f'{used_so_far}', v2=f'{MAX_REDUCED_DAILY_BETWEEN_WEEKLY}', v3=f'{remaining}')
         )
 
     return DailyReduced9hResult(

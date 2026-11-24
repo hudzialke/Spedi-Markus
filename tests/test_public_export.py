@@ -32,6 +32,18 @@ def test_export_excludes_personal_data_and_credentials(tmp_path):
     assert audit(destination) == []
 
 
+def test_database_or_backup_disguised_as_source_is_never_published(tmp_path):
+    root = source_tree(tmp_path)
+    path = root/'spedi'/'disguised.py'
+    path.parent.mkdir()
+    for header in (b'SQLite format 3\x00', b'7z\xbc\xaf\x27\x1c'):
+        path.write_bytes(header+b'private synthetic data')
+        assert audit(root) == ['Database or backup content: spedi/disguised.py']
+        with pytest.raises(ValueError, match='Database or backup content'):
+            export(root, tmp_path/'public')
+        assert not (tmp_path/'public').exists()
+
+
 def test_export_rejects_embedded_key_and_does_not_print_it(tmp_path):
     root = source_tree(tmp_path)
     path = root / 'spedi/app.py'

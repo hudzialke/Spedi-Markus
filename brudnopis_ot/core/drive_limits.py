@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from spedi.i18n import tr
+
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -72,9 +74,7 @@ def _period_summaries(
         avail = _sum_kind_hours(relevant, ActivityKind.AVAILABILITY, a, b)
         rest = _sum_kind_hours(relevant, rest_kinds, a, b)
         return (
-            f"Między OT {label}: jazda {format_duration_hm(drive)}, "
-            f"praca {format_duration_hm(work)}, dysp. {format_duration_hm(avail)}, "
-            f"odpoczynek {format_duration_hm(rest)}"
+            tr('Między OT {v0}: jazda {v1}, praca {v2}, dysp. {v3}, odpoczynek {v4}').format(v0=f'{label}', v1=f'{format_duration_hm(drive)}', v2=f'{format_duration_hm(work)}', v3=f'{format_duration_hm(avail)}', v4=f'{format_duration_hm(rest)}')
         )
 
     for prev, curr in zip(weekly, weekly[1:], strict=False):
@@ -175,8 +175,7 @@ def analyze_drive_limits(
                         severity="violation",
                         code="drive_10h_day",
                         message_pl=(
-                            f"Tydzień {widx + 1}: jazda {format_duration_hm(hours)} "
-                            f"dnia {day.strftime('%d.%m.%Y')} (max 10h)."
+                            tr('Tydzień {v0}: jazda {v1} dnia {v2} (max 10h).').format(v0=f'{widx + 1}', v1=f'{format_duration_hm(hours)}', v2=f"{day.strftime('%d.%m.%Y')}")
                         ),
                         underline_range=TimeRange(
                             start=day_start,
@@ -191,21 +190,18 @@ def analyze_drive_limits(
                     severity="violation",
                     code="drive_10h",
                     message_pl=(
-                        f"Tydzień {widx + 1} ({monday.strftime('%d.%m')}–"
-                        f"{(monday + timedelta(days=6)).strftime('%d.%m')}): "
-                        f"{len(extended_days)}× jazda >9h (dozwolone max 2×10h)."
+                        tr('Tydzień {v0} ({v1}–{v2}): {v3}× jazda >9h (dozwolone max 2×10h).').format(v0=f'{widx + 1}', v1=f"{monday.strftime('%d.%m')}", v2=f"{(monday + timedelta(days=6)).strftime('%d.%m')}", v3=f'{len(extended_days)}')
                     ),
                 )
             )
         elif drive_h > 0.5:
             used = len(extended_days)
             hints.append(
-                f"Tydzień {widx + 1}: jazda {format_duration_hm(drive_h)}/56h · "
-                f"dni 10h: {used}/2 · "
+                tr('Tydzień {v0}: jazda {v1}/56h · dni 10h: {v2}/2 · ').format(v0=f'{widx + 1}', v1=f'{format_duration_hm(drive_h)}', v2=f'{used}')
                 + (
-                    f"wolno jeszcze {remaining_10}× jazdę 10h"
+                    tr('wolno jeszcze {v0}× jazdę 10h').format(v0=f'{remaining_10}')
                     if remaining_10
-                    else "brak kolejnych 10h w tym tygodniu"
+                    else tr('brak kolejnych 10h w tym tygodniu')
                 )
             )
 
@@ -216,8 +212,7 @@ def analyze_drive_limits(
                     severity="violation",
                     code="drive_56h",
                     message_pl=(
-                        f"Tydzień {widx + 1}: jazda {format_duration_hm(drive_h)} "
-                        f"(limit 56h/tydzień)."
+                        tr('Tydzień {v0}: jazda {v1} (limit 56h/tydzień).').format(v0=f'{widx + 1}', v1=f'{format_duration_hm(drive_h)}')
                     ),
                     underline_range=TimeRange(start=start, end=end),
                 )
@@ -237,8 +232,7 @@ def analyze_drive_limits(
                     severity="violation",
                     code="drive_90h",
                     message_pl=(
-                        f"Tygodnie {widx + 1}–{widx + 2}: jazda "
-                        f"{format_duration_hm(total)} (limit 90h/2 tygodnie)."
+                        tr('Tygodnie {v0}–{v1}: jazda {v2} (limit 90h/2 tygodnie).').format(v0=f'{widx + 1}', v1=f'{widx + 2}', v2=f'{format_duration_hm(total)}')
                     ),
                     underline_range=TimeRange(start=start, end=end),
                 )
@@ -280,26 +274,23 @@ def analyze_ot_planning_hints(
                     severity="warning",
                     code="pm_pair_cooldown",
                     message_pl=(
-                        "Nie można jeszcze zaplanować kolejnych 2× skróconych OT (PM): "
-                        f"w oknie 4 tygodni od {a.start.strftime('%d.%m')} wymagane są "
-                        f"co najmniej 2 regularne OT 45h (jest {len(regulars)})."
+                        tr('Nie można jeszcze zaplanować kolejnych 2× skróconych OT (PM): w oknie 4 tygodni od {v0} wymagane są co najmniej 2 regularne OT 45h (jest {v1}).').format(v0=f"{a.start.strftime('%d.%m')}", v1=f'{len(regulars)}')
                     ),
                     related_block_ids=a.block_ids + b.block_ids,
                 )
             )
         else:
             hints.append(
-                f"Po parze PM ({a.start.strftime('%d.%m')}+{b.start.strftime('%d.%m')}): "
-                "warunki 4 tygodni spełnione — można ponownie planować 2× skrócone OT."
+                tr('Po parze PM ({v0}+{v1}): warunki 4 tygodni spełnione — można ponownie planować 2× skrócone OT.').format(v0=f"{a.start.strftime('%d.%m')}", v1=f"{b.start.strftime('%d.%m')}")
             )
 
     if not pm_pairs:
         hints.append(
-            "Można zaplanować 2 kolejne skrócone OT (PM), jeśli oba rozpoczną się za granicą."
+            tr('Można zaplanować 2 kolejne skrócone OT (PM), jeśli oba rozpoczną się za granicą.')
         )
     elif latest_pm_ready:
         hints.append(
-            "Można ponownie zaplanować 2 kolejne skrócone OT (pakiet mobilności)."
+            tr('Można ponownie zaplanować 2 kolejne skrócone OT (pakiet mobilności).')
         )
 
     # --- Wymuszony regularny (art. 8(6)) ---
@@ -329,10 +320,7 @@ def analyze_ot_planning_hints(
                     severity="warning",
                     code="ot_regular_forced",
                     message_pl=(
-                        f"W tygodniu {widx + 1} ({monday.strftime('%d.%m')}–"
-                        f"{(monday + timedelta(days=6)).strftime('%d.%m')}) "
-                        "wymuszony jest odpoczynek tygodniowy regularny (45h) — "
-                        "poprzedni tydzień miał skrócony OT (poza legalną parą PM)."
+                        tr('W tygodniu {v0} ({v1}–{v2}) wymuszony jest odpoczynek tygodniowy regularny (45h) — poprzedni tydzień miał skrócony OT (poza legalną parą PM).').format(v0=f'{widx + 1}', v1=f"{monday.strftime('%d.%m')}", v2=f"{(monday + timedelta(days=6)).strftime('%d.%m')}")
                     ),
                 )
             )
